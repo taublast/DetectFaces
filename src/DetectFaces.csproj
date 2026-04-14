@@ -36,8 +36,6 @@
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">24.0</SupportedOSPlatformVersion>
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
 		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
-		<MediaPipeTasksVisionAndroidPackageVersion>0.10.33-preview.4</MediaPipeTasksVisionAndroidPackageVersion>
-		<MediaPipeTasksVisionIosPackageVersion>0.10.21</MediaPipeTasksVisionIosPackageVersion>
 	</PropertyGroup>
 
 	<!-- Prevent Android from compressing .task files so MediaPipe can read them directly -->
@@ -75,33 +73,26 @@
                 <MauiAsset Include="Resources\Raw\*.tflite" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
                 <MauiAsset Include="Resources\Raw\*.pbtxt" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
 
-
-
-
 	</ItemGroup>
 
 	<ItemGroup>
-		<!--<PackageReference Include="DrawnUi.Maui.Camera" Version="1.9.7.1" />-->
+		<PackageReference Include="DrawnUi.Maui.Camera" Version="1.9.7.6" />
 		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.5" />
 	</ItemGroup>
 
 	<!-- MediaPipe Face Landmark Detection - platform-specific packages -->
 	<ItemGroup Condition="$(TargetFramework.Contains('android'))">
-		<PackageReference Include="MediaPipeTasksVision.Android" Version="$(MediaPipeTasksVisionAndroidPackageVersion)" />
+		<PackageReference Include="MediaPipeTasksVision.Android" Version="0.10.33-preview.5" />
 	</ItemGroup>
 
 	<ItemGroup Condition="$(TargetFramework.Contains('-ios'))">
-		<PackageReference Include="MediaPipeTasksVision.iOS" Version="$(MediaPipeTasksVisionIosPackageVersion)" />
+		<PackageReference Include="MediaPipeTasksVision.iOS" Version="0.10.21" />
 	</ItemGroup>
 
 	<ItemGroup Condition="$(TargetFramework.Contains('windows'))">
 		<PackageReference Include="Mediapipe.Net" Version="0.9.2" />
 		<PackageReference Include="Mediapipe.Net.Runtime.CPU" Version="0.9.1" />
-	</ItemGroup>
-
-	<ItemGroup>
-	  <ProjectReference Include="..\..\Lib\DrawnUi.Maui.Camera.csproj" />
 	</ItemGroup>
 
  

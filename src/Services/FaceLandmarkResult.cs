@@ -23,8 +23,9 @@ public class MaskConfiguration
 
 public enum DetectionType
 {
+    Disabled,
     Landmark,
-    Rectangle,
+    Rectangle,  
     Mask
 }
 

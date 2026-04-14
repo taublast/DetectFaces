@@ -8,9 +8,9 @@ namespace TestFaces.Platforms.iOS;
 
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
-    private const float DefaultMinFaceDetectionConfidence = 0.5f;
-    private const float DefaultMinFacePresenceConfidence = 0.5f;
-    private const float DefaultMinTrackingConfidence = 0.5f;
+    private const float DefaultMinFaceDetectionConfidence = 0.3f;
+    private const float DefaultMinFacePresenceConfidence = 0.3f;
+    private const float DefaultMinTrackingConfidence = 0.3f;
 
     private MPPFaceLandmarker? _landmarker;
     private readonly object _pendingSync = new();
@@ -97,6 +97,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
         var baseOptions = new MPPBaseOptions();
         baseOptions.ModelAssetPath = modelPath;
+        baseOptions.Delegate = DetectionSettings.TryUseGpu ? MPPDelegate.Gpu : MPPDelegate.Cpu;
 
         var options = new MPPFaceLandmarkerOptions();
         options.BaseOptions = baseOptions;
@@ -119,99 +120,47 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         return Math.Clamp(value, 0f, 1f);
     }
 
-    public Task<FaceLandmarkResult> DetectAsync(Stream imageStream)
+    public void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request)
     {
-        return Task.Run(() =>
+        try
         {
-            using var ms = new MemoryStream();
-            imageStream.CopyTo(ms);
-            var data = NSData.FromArray(ms.ToArray());
-            var uiImage = UIImage.LoadFromData(data)
-                ?? throw new InvalidOperationException("Failed to decode image");
+            if (rgbaBytes == null || request.Width <= 0 || request.Height <= 0 || rgbaBytes.Length < request.Width * request.Height * 4)
+            {
+                RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
+                return;
+            }
 
+            using var data = NSData.FromArray(rgbaBytes);
+            using var provider = new CGDataProvider(data);
+            using var colorSpace = CGColorSpace.CreateDeviceRGB();
+            using var cgImage = new CGImage(
+                request.Width,
+                request.Height,
+                8,
+                32,
+                request.Width * 4,
+                colorSpace,
+                CGBitmapFlags.ByteOrderDefault | CGBitmapFlags.PremultipliedLast,
+                provider,
+                null,
+                false,
+                CGColorRenderingIntent.Default);
+
+            using var uiImage = new UIImage(cgImage);
             var mpImage = new MPPImage(uiImage, out var imageError);
             if (imageError is not null)
                 throw new InvalidOperationException($"Failed to create MPPImage: {imageError.LocalizedDescription}");
-            var result = GetLandmarker().DetectImage(mpImage, out var error);
+
+            BeginPendingPreviewDetection(request);
+
+            var timestampMs = (nint)Interlocked.Increment(ref _videoTimestampMs);
+            GetLandmarker().DetectAsyncImage(mpImage, timestampMs, out var error);
             if (error is not null)
                 throw new InvalidOperationException($"Detection failed: {error.LocalizedDescription}");
-
-            var faceLandmarks = result?.FaceLandmarks;
-            var faces = faceLandmarks is NSArray faceLandmarkArray
-                ? new List<DetectedFace>((int)faceLandmarkArray.Count)
-                : new List<DetectedFace>();
-            if (faceLandmarks is not null)
-            {
-                foreach (var landmarkList in faceLandmarks)
-                {
-                    faces.Add(MapDetectedFace(landmarkList));
-                }
-            }
-
-            var width = (int)(uiImage.Size.Width * uiImage.CurrentScale);
-            var height = (int)(uiImage.Size.Height * uiImage.CurrentScale);
-
-            return new FaceLandmarkResult
-            {
-                Faces = faces,
-                ImageWidth = width,
-                ImageHeight = height,
-            };
-        });
-    }
-
-    public void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request)
-    {
-        _ = Task.Run(() =>
+        }
+        catch (Exception ex)
         {
-            try
-            {
-                if (rgbaBytes == null || request.Width <= 0 || request.Height <= 0 || rgbaBytes.Length < request.Width * request.Height * 4)
-                {
-                    RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
-                    return;
-                }
-
-                using var data = NSData.FromArray(rgbaBytes);
-                using var provider = new CGDataProvider(data);
-                using var colorSpace = CGColorSpace.CreateDeviceRGB();
-                using var cgImage = new CGImage(
-                    request.Width,
-                    request.Height,
-                    8,
-                    32,
-                    request.Width * 4,
-                    colorSpace,
-                    CGBitmapFlags.ByteOrderDefault | CGBitmapFlags.PremultipliedLast,
-                    provider,
-                    null,
-                    false,
-                    CGColorRenderingIntent.Default);
-
-                using var uiImage = new UIImage(cgImage);
-                var mpImage = new MPPImage(uiImage, out var imageError);
-                if (imageError is not null)
-                    throw new InvalidOperationException($"Failed to create MPPImage: {imageError.LocalizedDescription}");
-
-                BeginPendingPreviewDetection(request);
-
-                var timestampMs = (nint)Interlocked.Increment(ref _videoTimestampMs);
-                GetLandmarker().DetectAsyncImage(mpImage, timestampMs, out var error);
-                if (error is not null)
-                    throw new InvalidOperationException($"Detection failed: {error.LocalizedDescription}");
-            }
-            catch (Exception ex)
-            {
-                RaisePreviewDetectionFailed(request, ex);
-            }
-        });
-    }
-
-    private void BeginPendingTaskDetection(TaskCompletionSource<FaceLandmarkResult> completion, int width, int height)
-    {
-        lock (_pendingSync)
-        {
-            _pendingDetection = PendingDetection.ForTask(completion, width, height);
+            RaisePreviewDetectionFailed(request, ex);
         }
     }
 
@@ -219,7 +168,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     {
         lock (_pendingSync)
         {
-            _pendingDetection = PendingDetection.ForPreview(request);
+            _pendingDetection = new PendingDetection(request);
         }
     }
 
@@ -239,30 +188,12 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         if (error is not null)
         {
             var exception = new InvalidOperationException($"Detection failed: {error.LocalizedDescription}");
-            if (pendingDetection.Completion != null)
-            {
-                pendingDetection.Completion.TrySetException(exception);
-                return;
-            }
-
-            if (pendingDetection.Request != null)
-            {
-                RaisePreviewDetectionFailed(pendingDetection.Request, exception);
-            }
+            RaisePreviewDetectionFailed(pendingDetection.Request, exception);
             return;
         }
 
-        var converted = ConvertResult(result, pendingDetection.Width, pendingDetection.Height);
-        if (pendingDetection.Completion != null)
-        {
-            pendingDetection.Completion.TrySetResult(converted);
-            return;
-        }
-
-        if (pendingDetection.Request != null)
-        {
-            RaisePreviewDetectionCompleted(pendingDetection.Request, converted);
-        }
+        var converted = ConvertResult(result, pendingDetection.Request.Width, pendingDetection.Request.Height);
+        RaisePreviewDetectionCompleted(pendingDetection.Request, converted);
     }
 
     private void RaisePreviewDetectionCompleted(PreviewDetectionRequest request, FaceLandmarkResult result)
@@ -314,27 +245,12 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
     private sealed class PendingDetection
     {
-        private PendingDetection(TaskCompletionSource<FaceLandmarkResult>? completion, PreviewDetectionRequest? request, int width, int height)
+        public PendingDetection(PreviewDetectionRequest request)
         {
-            Completion = completion;
             Request = request;
-            Width = width;
-            Height = height;
         }
 
-        public TaskCompletionSource<FaceLandmarkResult>? Completion { get; }
-
-        public PreviewDetectionRequest? Request { get; }
-
-        public int Width { get; }
-
-        public int Height { get; }
-
-        public static PendingDetection ForTask(TaskCompletionSource<FaceLandmarkResult> completion, int width, int height)
-            => new(completion, null, width, height);
-
-        public static PendingDetection ForPreview(PreviewDetectionRequest request)
-            => new(null, request, request.Width, request.Height);
+        public PreviewDetectionRequest Request { get; }
     }
 
     private sealed class LiveStreamDelegate : MPPFaceLandmarkerLiveStreamDelegate

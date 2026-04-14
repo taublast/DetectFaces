@@ -10,7 +10,6 @@ public interface IFaceLandmarkDetector
     event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
     event EventHandler<PreviewDetectionFailedEventArgs>? PreviewDetectionFailed;
 
-    Task<FaceLandmarkResult> DetectAsync(Stream imageStream);
     void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request);
 }
 

@@ -59,6 +59,12 @@ public partial class MainPage : ContentPage
         try
         {
             InitializeComponent();
+            ModePicker.SelectedIndex = DetectionSettings.InitialDetectionType switch
+            {
+                DetectionType.Rectangle => 1,
+                DetectionType.Mask => 2,
+                _ => 0 // Landmark
+            };
         }
         catch (Exception e)
         {
@@ -77,7 +83,6 @@ public partial class MainPage : ContentPage
     {
         CameraControl.Detector = _detector;
         _detector.MaxFaces = CameraControl.MaxNumFaces;
-        SyncConfidenceInputsFromCamera();
         AttachHardware(true);
         OnModeChanged(null, EventArgs.Empty);
     }
@@ -103,54 +108,6 @@ public partial class MainPage : ContentPage
 
 
     #region DETECT FACE LANDMARKS
-
-    private void SyncConfidenceInputsFromCamera()
-    {
-        // Keep the manual input fields in sync with the camera's current detector thresholds.
-        DetectionConfidenceEntry.Text = CameraControl.MinFaceDetectionConfidence.ToString("0.00");
-        PresenceConfidenceEntry.Text = CameraControl.MinFacePresenceConfidence.ToString("0.00");
-        TrackingConfidenceEntry.Text = CameraControl.MinTrackingConfidence.ToString("0.00");
-    }
-
-    private void OnApplyConfidenceClicked(object? sender, EventArgs e)
-    {
-        try
-        {
-            // These inputs intentionally accept raw text so thresholds can be tuned manually while the sample is running.
-            var detectionConfidence = ParseConfidenceOrThrow(DetectionConfidenceEntry.Text, nameof(DetectionConfidenceEntry));
-            var presenceConfidence = ParseConfidenceOrThrow(PresenceConfidenceEntry.Text, nameof(PresenceConfidenceEntry));
-            var trackingConfidence = ParseConfidenceOrThrow(TrackingConfidenceEntry.Text, nameof(TrackingConfidenceEntry));
-
-            CameraControl.MinFaceDetectionConfidence = detectionConfidence;
-            CameraControl.MinFacePresenceConfidence = presenceConfidence;
-            CameraControl.MinTrackingConfidence = trackingConfidence;
-
-            // Re-apply settings immediately so the detector instance can rebuild with the new thresholds if needed.
-            CameraControl.Detector = _detector;
-            SyncConfidenceInputsFromCamera();
-            StatusLabel.Text = $"Confidence updated det {detectionConfidence:0.00}, pres {presenceConfidence:0.00}, track {trackingConfidence:0.00}";
-        }
-        catch (Exception ex)
-        {
-            StatusLabel.Text = ex.Message;
-        }
-    }
-
-    private static float ParseConfidenceOrThrow(string? rawValue, string inputName)
-    {
-        if (!float.TryParse(rawValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) &&
-            !float.TryParse(rawValue, out value))
-        {
-            throw new InvalidOperationException($"{inputName} must be a number between 0 and 1.");
-        }
-
-        if (value < 0f || value > 1f)
-        {
-            throw new InvalidOperationException($"{inputName} must be in the range 0..1.");
-        }
-
-        return value;
-    }
 
     private async void OnModeChanged(object? sender, EventArgs e)
     {
@@ -204,60 +161,15 @@ public partial class MainPage : ContentPage
         }
     }
 
-    private async void OnPickPhotoClicked(object? sender, EventArgs e)
+    private void OnDebugClicked(object? sender, EventArgs e)
     {
-        try
-        {
-            var results = await MediaPicker.Default.PickPhotosAsync(new MediaPickerOptions
-            {
-                Title = "Pick a Photo",
-            });
-            var result = results?.FirstOrDefault();
-            if (result is null)
-                return;
+#if ANDROID
+        TestFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi =
+            !TestFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi;
 
-            // Open two separate streams: one for display, one for detection
-            var displayStream = await result.OpenReadAsync();
-            SelectedImage.Source = ImageSource.FromStream(() => displayStream);
-            SelectedImage.IsVisible = true;
-
-            // Show spinner
-            StatusLabel.Text = "Detecting landmarks...";
-            //Spinner.IsRunning = true;
-            //Spinner.IsVisible = true;
-            PickPhotoBtn.IsEnabled = false;
-
-            _detector.MaxFaces = CameraControl.MaxNumFaces;
-
-            FaceLandmarkResult detection;
-            using (var detectionStream = await result.OpenReadAsync())
-            {
-                detection = await _detector.DetectAsync(detectionStream);
-            }
-
-            var faceCount = detection.Faces.Count;
-            StatusLabel.Text = faceCount switch
-            {
-                0 => "No faces detected.",
-                1 => "1 face detected.",
-                _ => $"{faceCount} faces detected.",
-            };
-        }
-        catch (PlatformNotSupportedException ex)
-        {
-            StatusLabel.Text = ex.Message;
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine(ex);
-            StatusLabel.Text = $"Error: {ex.Message}";
-        }
-        finally
-        {
-            //Spinner.IsRunning = false;
-            //Spinner.IsVisible = false;
-            PickPhotoBtn.IsEnabled = true;
-        }
+        var state = TestFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi ? "YES" : "NO";
+        DebugBtn.Text = $"Use Fast API: {state}";
+#endif
     }
 
     #endregion
@@ -339,6 +251,14 @@ public partial class MainPage : ContentPage
         }
 
         var metrics = _lastPreviewMetrics;
+
+        //SHORT
+        StatusLabel.Text = $"{facesText}  benchmark {metrics.DetectionMilliseconds:F1}";
+
+        return;
+
+        //FULL
+
         var sourceText = metrics.ReusedCachedFrame ? "cached" : "live";
         var otherDetectorMilliseconds = Math.Max(
             0,
@@ -346,10 +266,12 @@ public partial class MainPage : ContentPage
             - detection.ConversionMilliseconds
             - detection.InferenceMilliseconds
             - detection.ResultMappingMilliseconds);
+
         var backendText = detection.InferenceMilliseconds > 0
             ? $", conv {detection.ConversionMilliseconds:F1}, mp {detection.InferenceMilliseconds:F1}, map {detection.ResultMappingMilliseconds:F1}, other {otherDetectorMilliseconds:F1}, {(detection.UsedGpuDelegate ? "gpu" : "cpu")}"
             : string.Empty;
 
+        
         StatusLabel.Text = $"{facesText} size {metrics.ResizeMilliseconds:F1}, det {metrics.DetectionMilliseconds:F1}{backendText}, {metrics.Width}x{metrics.Height}, {sourceText}";
     }
 

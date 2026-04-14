@@ -7,7 +7,7 @@
     Title="TestFaces">
 
     <ShellContent
-        Title="Home"
+        Title="MAUI Face Detection"
         ContentTemplate="{DataTemplate local:MainPage}"
         Route="MainPage" />
 

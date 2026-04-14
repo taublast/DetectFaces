@@ -30,35 +30,35 @@ namespace CameraTests.UI
         /// Reduced maximum detector input size used while one face is already tracked.
         /// Lower values cut reacquisition cost, but overly small values can reduce landmark stability.
         /// </summary>
-        private const int DefaultTrackedSingleFaceMlMaxDimension = 96;
+        private const int DefaultTrackedSingleFaceMlMaxDimension = 112;
 
         /// <summary>
         /// Reduced maximum detector input size used while multiple faces are already tracked.
         /// This stays slightly larger than single-face mode to preserve more detail across several faces.
         /// </summary>
-        private const int DefaultTrackedMultiFaceMlMaxDimension = 112;
+        private const int DefaultTrackedMultiFaceMlMaxDimension = 128;
 
         /// <summary>
         /// Default minimum confidence threshold for the face-detection stage.
         /// </summary>
-        private const float DefaultMinFaceDetectionConfidence = 0.5f;
+        private const float DefaultMinFaceDetectionConfidence = 0.2f;
 
         /// <summary>
         /// Default minimum confidence threshold for the face-presence stage.
         /// </summary>
-        private const float DefaultMinFacePresenceConfidence = 0.5f;
+        private const float DefaultMinFacePresenceConfidence = 0.2f;
 
         /// <summary>
         /// Default minimum confidence threshold for landmark tracking.
         /// </summary>
-        private const float DefaultMinTrackingConfidence = 0.5f;
+        private const float DefaultMinTrackingConfidence = 0.2f;
 
         /// <summary>
         /// Time constant for overlay interpolation toward the latest detected landmarks.
         /// Higher values make masks smoother but laggier; lower values make them more responsive but twitchier.
         /// Values around 10-16 ms remove most visible landmark buzz while keeping the mask responsive.
         /// </summary>
-        private const double DefaultOverlaySmoothingMs = 16;
+        private const double DefaultOverlaySmoothingMs = 8;
 
         /// <summary>
         /// Normalized per-landmark deadzone applied before overlay interpolation.
@@ -280,10 +280,19 @@ namespace CameraTests.UI
             var kill2 = MaskBitmap;
             MaskBitmap = SKBitmap.Decode(managed);
             DisposeObject(kill2);
+
+            //exec on GPU thread: store bitmap in GPU texture
+            SafeAction(() =>
+            {
+                var kill3 = MaskImage;
+                using var gpu = this.CreateSurface(MaskBitmap.Width, MaskBitmap.Height, true);
+                gpu.Canvas.Clear(SKColors.Transparent);
+                gpu.Canvas.DrawBitmap(MaskBitmap, 0, 0);
+                gpu.Canvas.Flush();
+                MaskImage = gpu.Snapshot();
+                DisposeObject(kill3);
+            });
         }
-
-
-
 
         /// <summary>
         /// Releases detector subscriptions and stops the preview-detection pipeline before base disposal.
@@ -383,6 +392,8 @@ namespace CameraTests.UI
             _maskPaint = null;
             MaskBitmap?.Dispose();
             MaskBitmap = null;
+            MaskImage?.Dispose();
+            MaskImage = null;
             _filtersX = null;
             _filtersY = null;
         }
@@ -764,6 +775,7 @@ namespace CameraTests.UI
         private SKPaint? _detectionFillPaint;
         private SKPaint? _maskPaint;
         private SKBitmap? MaskBitmap;
+        private SKImage? MaskImage;
         private MaskConfiguration? ActiveMaskConfig;
         private DetectionSnapshot? _latestDetection;
         private DetectionSnapshot? _previousDetection;
@@ -1887,16 +1899,18 @@ namespace CameraTests.UI
             {
                 IsAntialias = true,
                 Color = SKColors.LimeGreen,
-                Style = SKPaintStyle.Fill
+                Style = SKPaintStyle.Stroke,
+                StrokeCap = SKStrokeCap.Round
             };
 
             _maskPaint ??= new SKPaint
             {
-                IsAntialias = true,
-                FilterQuality = SKFilterQuality.High
+                IsAntialias = false,
+                FilterQuality = SKFilterQuality.None
             };
 
             _detectionStrokePaint.StrokeWidth = Math.Max(2f, 2f * scale);
+            _detectionFillPaint.StrokeWidth = Math.Max(4f, 5f * scale);
         }
 
 
@@ -1908,12 +1922,15 @@ namespace CameraTests.UI
         /// <param name="rotation">The detector-space rotation that must be projected into frame space.</param>
         private void DrawFaceLandmarks(DrawableFrame frame, DetectedFace face, int rotation)
         {
-            float radius = Math.Max(2f, 2.5f * frame.Scale);
-            foreach (var point in face.Landmarks)
+            var landmarks = face.Landmarks;
+            var pts = new SKPoint[landmarks.Count];
+            for (int i = 0; i < landmarks.Count; i++)
             {
-                var projected = ProjectPoint(point, rotation, false);
-                frame.Canvas.DrawCircle(projected.X * frame.Width, projected.Y * frame.Height, radius, _detectionFillPaint);
+                var projected = ProjectPoint(landmarks[i], rotation, false);
+                pts[i] = new SKPoint(projected.X * frame.Width, projected.Y * frame.Height);
             }
+
+            frame.Canvas.DrawPoints(SKPointMode.Points, pts, _detectionFillPaint);
         }
 
         /// <summary>
@@ -1952,7 +1969,7 @@ namespace CameraTests.UI
         /// <param name="rotation">The detector-space rotation that must be projected into frame space.</param>
         private void DrawFaceMask(DrawableFrame frame, DetectedFace face, int rotation)
         {
-            if (face.Landmarks.Count < 455 || MaskBitmap == null)
+            if (face.Landmarks.Count < 455 || MaskImage == null || MaskBitmap == null)
                 return;
 
             var maskPos = ActiveMaskConfig?.Position ?? MaskPosition.Inside;
@@ -1998,7 +2015,7 @@ namespace CameraTests.UI
             frame.Canvas.Save();
             frame.Canvas.Translate(xAnchor, yAnchor);
             frame.Canvas.RotateDegrees(angle);
-            frame.Canvas.DrawBitmap(MaskBitmap, new SKRect(-maskWidth / 2f, targetDrawY, maskWidth / 2f, targetDrawY + maskHeight), _maskPaint);
+            frame.Canvas.DrawImage(MaskImage, new SKRect(-maskWidth / 2f, targetDrawY, maskWidth / 2f, targetDrawY + maskHeight), _maskPaint);
             frame.Canvas.Restore();
         }
 

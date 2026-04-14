@@ -14,10 +14,6 @@ namespace TestFaces.Platforms.Droid;
 /// </summary>
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
-    private const float DefaultMinFaceDetectionConfidence = 0.5f;
-    private const float DefaultMinFacePresenceConfidence = 0.5f;
-    private const float DefaultMinTrackingConfidence = 0.5f;
-
     private FaceLandmarker? _landmarker;
     private readonly object _landmarkerSync = new();
     private readonly object _pendingSync = new();
@@ -26,9 +22,9 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private bool _usingGpuDelegate;
     private long _videoTimestampMs;
     private int _maxFaces = 2;
-    private float _minFaceDetectionConfidence = DefaultMinFaceDetectionConfidence;
-    private float _minFacePresenceConfidence = DefaultMinFacePresenceConfidence;
-    private float _minTrackingConfidence = DefaultMinTrackingConfidence;
+    private float _minFaceDetectionConfidence = 0.5f;
+    private float _minFacePresenceConfidence = 0.5f;
+    private float _minTrackingConfidence = 0.5f;
     private Bitmap? _liveBitmap;
     private int[]? _livePixels;
     private int _liveWidth;
@@ -111,18 +107,27 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             if (_landmarker is not null)
                 return _landmarker;
 
-            try
+            if (DetectionSettings.TryUseGpu)
             {
-                _landmarker = CreateLandmarker(useGpu: true);
-                _usingGpuDelegate = true;
-                Debug.WriteLine("FaceLandmarker Android: using GPU delegate.");
+                try
+                {
+                    _landmarker = CreateLandmarker(useGpu: true);
+                    _usingGpuDelegate = true;
+                    Debug.WriteLine("FaceLandmarker Android: using GPU delegate.");
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"FaceLandmarker Android: GPU delegate init failed, falling back to CPU. {ex}");
+                    _landmarker = CreateLandmarker(useGpu: false);
+                    _usingGpuDelegate = false;
+                    Debug.WriteLine("FaceLandmarker Android: using CPU delegate.");
+                }
             }
-            catch (Exception ex)
+            else
             {
-                Debug.WriteLine($"FaceLandmarker Android: GPU delegate init failed, falling back to CPU. {ex}");
                 _landmarker = CreateLandmarker(useGpu: false);
                 _usingGpuDelegate = false;
-                Debug.WriteLine("FaceLandmarker Android: using CPU delegate.");
+                Debug.WriteLine("FaceLandmarker Android: using CPU delegate (GPU disabled by DetectionSettings).");
             }
 
             return _landmarker;
@@ -151,39 +156,6 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
         return FaceLandmarker.CreateFromOptions(
             global::Android.App.Application.Context, options);
-    }
-
-    public Task<FaceLandmarkResult> DetectAsync(Stream imageStream)
-    {
-        var completion = new TaskCompletionSource<FaceLandmarkResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        Task.Run(() =>
-        {
-            try
-            {
-                using var bitmap = BitmapFactory.DecodeStream(imageStream);
-                if (bitmap is null)
-                {
-                    completion.TrySetResult(new FaceLandmarkResult());
-                    return;
-                }
-
-                var convertStopwatch = Stopwatch.StartNew();
-                var mpImage = new BitmapImageBuilder(bitmap).Build();
-                convertStopwatch.Stop();
-
-                BeginPendingTaskDetection(completion, bitmap.Width, bitmap.Height, convertStopwatch.Elapsed.TotalMilliseconds);
-
-                var timestampMs = Interlocked.Increment(ref _videoTimestampMs);
-                GetLandmarker().DetectAsync(mpImage, timestampMs);
-            }
-            catch (Exception ex)
-            {
-                completion.TrySetException(ex);
-            }
-        });
-
-        return completion.Task;
     }
 
     public void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request)
@@ -244,19 +216,11 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         return Math.Clamp(value, 0f, 1f);
     }
 
-    private void BeginPendingTaskDetection(TaskCompletionSource<FaceLandmarkResult> completion, int width, int height, double conversionMilliseconds)
-    {
-        lock (_pendingSync)
-        {
-            _pendingDetection = PendingDetection.ForTask(completion, width, height, conversionMilliseconds, Stopwatch.GetTimestamp());
-        }
-    }
-
     private void BeginPendingPreviewDetection(PreviewDetectionRequest request, double conversionMilliseconds)
     {
         lock (_pendingSync)
         {
-            _pendingDetection = PendingDetection.ForPreview(request, conversionMilliseconds, Stopwatch.GetTimestamp());
+            _pendingDetection = new PendingDetection(request, conversionMilliseconds, Stopwatch.GetTimestamp());
         }
     }
 
@@ -275,22 +239,13 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
         var converted = ConvertResult(
             result,
-            pendingDetection.Width,
-            pendingDetection.Height,
+            pendingDetection.Request.Width,
+            pendingDetection.Request.Height,
             pendingDetection.ConversionMilliseconds,
             Stopwatch.GetElapsedTime(pendingDetection.InferenceStartTicks).TotalMilliseconds,
             _usingGpuDelegate);
 
-        if (pendingDetection.Completion != null)
-        {
-            pendingDetection.Completion.TrySetResult(converted);
-            return;
-        }
-
-        if (pendingDetection.Request != null)
-        {
-            RaisePreviewDetectionCompleted(pendingDetection.Request, converted);
-        }
+        RaisePreviewDetectionCompleted(pendingDetection.Request, converted);
     }
 
     private void OnLiveStreamError(Java.Lang.RuntimeException error)
@@ -307,16 +262,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             return;
 
         var exception = new InvalidOperationException($"Android FaceLandmarker failed: {error.Message}", error);
-        if (pendingDetection.Completion != null)
-        {
-            pendingDetection.Completion.TrySetException(exception);
-            return;
-        }
-
-        if (pendingDetection.Request != null)
-        {
-            RaisePreviewDetectionFailed(pendingDetection.Request, exception);
-        }
+        RaisePreviewDetectionFailed(pendingDetection.Request, exception);
     }
 
     private void RaisePreviewDetectionCompleted(PreviewDetectionRequest request, FaceLandmarkResult result)
@@ -354,8 +300,15 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         return _livePixels;
     }
 
+    /// <summary>
+    /// When true, landmarks are read via the low-overhead bulk JNI accessors (FaceLandmarksXY).
+    /// Set to false to use the generated FaceLandmarks wrapper list — useful for benchmarking
+    /// the difference between the two approaches.
+    /// </summary>
+    public static bool UseFastApi = true;
+
     private static FaceLandmarkResult ConvertResult(
-        FaceLandmarkerResult? result,
+        FaceLandmarkerResult result,
         int width,
         int height,
         double conversionMilliseconds,
@@ -363,26 +316,35 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         bool usedGpuDelegate)
     {
         var mappingStopwatch = Stopwatch.StartNew();
-        var faceLandmarks = result?.FaceLandmarksXY();
-        // For richer metadata at a higher mapping cost, switch back to the detailed API:
-        // var detailedFaceLandmarks = result?.FaceLandmarksDetailed();
-        var faces = faceLandmarks != null
-            ? new List<DetectedFace>(faceLandmarks.Length)
-            : new List<DetectedFace>();
-        if (faceLandmarks is not null)
+        List<DetectedFace> faces;
+
+        if (UseFastApi) // use new FAST landmarks read
         {
-            for (int faceIndex = 0; faceIndex < faceLandmarks.Length; faceIndex++)
+            var faceLandmarks = result?.FaceLandmarksXY();
+            faces = faceLandmarks != null ? new List<DetectedFace>(faceLandmarks.Length) : new List<DetectedFace>(2);
+            if (faceLandmarks is not null)
             {
-                faces.Add(MapDetectedFace(faceLandmarks[faceIndex], 2));
+                for (int faceIndex = 0; faceIndex < faceLandmarks.Length; faceIndex++)
+                    faces.Add(MapDetectedFace(faceLandmarks[faceIndex], 2));
             }
         }
-        // if (detailedFaceLandmarks is not null)
-        // {
-        //     for (int faceIndex = 0; faceIndex < detailedFaceLandmarks.Length; faceIndex++)
-        //     {
-        //         faces.Add(MapDetectedFace(detailedFaceLandmarks[faceIndex].XYZCoordinates, 3));
-        //     }
-        // }
+        else
+        {
+            // Slow path: use default API and traverses IList<IList<NormalizedLandmark>> ~1400 JNI crossings per frame for 478 landmarks
+            var faceLandmarks = result.FaceLandmarks();
+            faces = faceLandmarks != null ? new List<DetectedFace>(faceLandmarks.Count) : new List<DetectedFace>(2);
+            if (faceLandmarks is not null)
+            {
+                foreach (var face in faceLandmarks)
+                {
+                    var points = new List<NormalizedPoint>(face.Count);
+                    foreach (var lm in face)
+                        points.Add(new NormalizedPoint(lm.X(), lm.Y()));
+                    faces.Add(new DetectedFace { Landmarks = points });
+                }
+            }
+        }
+
         mappingStopwatch.Stop();
 
         return new FaceLandmarkResult
@@ -452,32 +414,17 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
     private sealed class PendingDetection
     {
-        private PendingDetection(TaskCompletionSource<FaceLandmarkResult>? completion, PreviewDetectionRequest? request, int width, int height, double conversionMilliseconds, long inferenceStartTicks)
+        public PendingDetection(PreviewDetectionRequest request, double conversionMilliseconds, long inferenceStartTicks)
         {
-            Completion = completion;
             Request = request;
-            Width = width;
-            Height = height;
             ConversionMilliseconds = conversionMilliseconds;
             InferenceStartTicks = inferenceStartTicks;
         }
 
-        public TaskCompletionSource<FaceLandmarkResult>? Completion { get; }
-
-        public PreviewDetectionRequest? Request { get; }
-
-        public int Width { get; }
-
-        public int Height { get; }
+        public PreviewDetectionRequest Request { get; }
 
         public double ConversionMilliseconds { get; }
 
         public long InferenceStartTicks { get; }
-
-        public static PendingDetection ForTask(TaskCompletionSource<FaceLandmarkResult> completion, int width, int height, double conversionMilliseconds, long inferenceStartTicks)
-            => new(completion, null, width, height, conversionMilliseconds, inferenceStartTicks);
-
-        public static PendingDetection ForPreview(PreviewDetectionRequest request, double conversionMilliseconds, long inferenceStartTicks)
-            => new(null, request, request.Width, request.Height, conversionMilliseconds, inferenceStartTicks);
     }
 }
