@@ -1,4 +1,4 @@
-﻿namespace TestFaces;
+﻿namespace DetectFaces;
 
 public partial class AppShell : Shell
 {

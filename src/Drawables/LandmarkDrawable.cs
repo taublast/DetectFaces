@@ -1,6 +1,6 @@
-using TestFaces.Services;
+using DetectFaces.Services;
 
-namespace TestFaces.Drawables;
+namespace DetectFaces.Drawables;
 
 public class LandmarkDrawable : IDrawable
 {

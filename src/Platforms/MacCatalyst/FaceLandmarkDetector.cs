@@ -1,6 +1,6 @@
-using TestFaces.Services;
+using DetectFaces.Services;
 
-namespace TestFaces.Platforms.MacCatalyst;
+namespace DetectFaces.Platforms.MacCatalyst;
 
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {

@@ -1,123 +1,176 @@
-# Implementation Notes (TestFaces)
+# Implementation Notes (DetectFaces)
 
-This document summarizes what was implemented from [Plan.md](Plan.md), and what differs from that plan.
+This document describes the current state of the application — a .NET MAUI app that performs real-time face landmark detection on a live camera preview across Android, iOS, and Windows, using platform-specific MediaPipe bindings.
 
-## Implemented (matches Plan.md)
+## Architecture
 
-### Model asset
-- `Resources/Raw/face_landmarker.task` is included as a MAUI asset.
-- `Resources/Raw/AboutAssets.txt` remains alongside the model asset.
+```
+Live camera (SkiaCamera) → RGBA frame → IFaceLandmarkDetector.EnqueuePreviewDetection() → async callback → FaceLandmarkResult → AppCamera overlay draws landmarks/rectangles/masks on SkiaSharp canvas
+```
 
-### Shared contracts
-- `Services/IFaceLandmarkDetector.cs`: `Task<FaceLandmarkResult> DetectAsync(Stream imageStream)`.
-- `Services/FaceLandmarkResult.cs`: `FaceLandmarkResult` containing:
-  - `DetectionType` enum (`Landmark`, `Rectangle`, `Mask`)
-  - `Faces` (list of `DetectedFace`)
-  - `ImageWidth`, `ImageHeight`
-  - each `DetectedFace` contains `Landmarks` as normalized `(X, Y)` points.
+- **DrawnUI framework** — the entire UI is rendered via DrawnUI (`DrawnUi.Maui.Camera` NuGet). The camera preview, overlays, and FPS counter are all SkiaSharp-based DrawnUI controls, not standard MAUI views.
+- **Shared interface** `IFaceLandmarkDetector` with platform-specific implementations.
+- **Event-driven detection** — the interface uses `EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest)` with `PreviewDetectionCompleted`/`PreviewDetectionFailed` events, not a `Task<T>` return.
+- **Platform files** in `Platforms/{Platform}/` folders (compiled only for their platform).
+- **DI registration** in `MauiProgram.cs` via `#if` platform conditionals.
+- **Landmark visualization** via `AppCamera` (extends `SkiaCamera`), which internally uses a `LandmarkDrawable` for rendering overlays on the SkiaSharp canvas.
+- **No image resizing needed** — MediaPipe handles it internally. The camera preview frames are downscaled by `AppCamera` before being sent to the detector for performance.
 
-### UI + overlay rendering
-- `MainPage.xaml` contains:
-  - Photo pick button
-  - A `Picker` (dropdown) to select between `Landmark`, `Rectangle`, and `Mask` display modes
-  - ActivityIndicator (spinner)
-  - Status label
-  - An `Image` with a `GraphicsView` overlay for landmarks
-- `MainPage.xaml.cs`:
-  - Uses constructor injection for `IFaceLandmarkDetector`.
-  - Includes a parameterless constructor fallback for Shell/DataTemplate scenarios.
-  - Opens two streams from the picked photo: one for display and one for detection.
-  - Handles the `Picker` selection change to dynamically update the `DrawMode` and invalidate the overlay.
-- `Drawables/LandmarkDrawable.cs`:
-  - Draws dots for landmarks or bounding boxes (min/max bounds of the 468 landmarks), or 2D image overlays (Spider-Man Mask) based on the selected `DetectionType`.
-  - Uses the same AspectFit math as the `Image`.
+## NuGet Packages
 
-### Dependency injection
-- `MauiProgram.cs` registers a platform-specific `IFaceLandmarkDetector` implementation, and registers `MainPage` as transient.
+| Platform | Package | Version |
+|----------|---------|---------|
+| All | `DrawnUi.Maui.Camera` | 1.9.7.6 |
+| Android | `AppoMobi.Preview.MediaPipeTasksVision.Android` | 0.10.33-preview.14 |
+| iOS | `MediaPipeTasksVision.iOS` | 0.10.21 |
+| Windows | `Mediapipe.Net` | 0.9.2 |
+| Windows | `Mediapipe.Net.Runtime.CPU` | 0.9.1 |
 
-### Platform implementations
-- Android: `Platforms/Android/FaceLandmarkDetector.cs`
-  - Uses `MediaPipeTasksVision.Android`.
-  - Loads the `.task` model via `SetModelAssetPath("face_landmarker.task")`.
-  - Decodes the stream into a `Bitmap`, wraps it into an `MPImage`, runs detection, and maps to `FaceLandmarkResult`.
-  - Runs detection work on a background thread with `Task.Run`.
-- iOS: `Platforms/iOS/FaceLandmarkDetector.cs`
-  - Uses `MediaPipeTasksVision.iOS`.
-  - Loads the `.task` model from the app bundle via `NSBundle.MainBundle.PathForResource("face_landmarker", "task")`.
-  - Decodes the stream into `UIImage`, wraps it in `MPPImage`, runs detection, and maps to `FaceLandmarkResult`.
-  - Runs detection work on a background thread with `Task.Run`.
-- Mac Catalyst: `Platforms/MacCatalyst/FaceLandmarkDetector.cs`
-  - Remains a stub that throws `PlatformNotSupportedException`.
+Also: `AndroidStoreUncompressedFileExtensions` is set to `.task` so the model isn't compressed in the APK.
 
-### iOS privacy
-- `Platforms/iOS/Info.plist` contains `NSPhotoLibraryUsageDescription`.
+## Model Files
 
-### Project configuration
-- `TestFaces.csproj`:
-  - Uses a MAUI asset wildcard for `Resources/Raw/**`.
-  - Adds `AndroidStoreUncompressedFileExtensions` for `.task` files (Android).
-  - Adds platform-conditional NuGet package references for Android and iOS.
+- **Android/iOS**: `Resources/Raw/face_landmarker.task` (modern MediaPipe Tasks bundle)
+- **Windows**: `Resources/Raw/face_detection_short_range.tflite`, `face_landmark.tflite`, `face_landmark_front_cpu.pbtxt` (legacy MediaPipe graph + models)
+- **Overlay images**: `Resources/Raw/mask_spiderman.png`, `Resources/Raw/hat_cake.png` (shared across all platforms)
 
-## Implemented differently than Plan.md
+See [Includes.md](Includes.md) for the full asset manifest and per-platform build conditions.
 
-### Windows is not a stub (out-of-box landmark detection)
-Plan.md originally called for a Windows stub.
+## Shared Contracts
 
-What's implemented instead:
-- `Platforms/Windows/FaceLandmarkDetector.cs` implements real landmark detection using `Mediapipe.Net` + CPU runtime.
-- `TestFaces.csproj` includes Windows-only package references:
-  - `Mediapipe.Net` (0.9.2)
-  - `Mediapipe.Net.Runtime.CPU` (0.9.1)
-- A CPU MediaPipe graph config is shipped as an app asset:
-  - `Resources/Raw/face_landmark_front_cpu.pbtxt`
+### `Services/IFaceLandmarkDetector.cs`
+Event-driven interface for live preview detection:
+- `EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request)` — accepts raw RGBA bytes from the camera.
+- `PreviewDetectionCompleted` / `PreviewDetectionFailed` events for async results.
+- Configurable properties: `MaxFaces`, `MinFaceDetectionConfidence`, `MinFacePresenceConfidence`, `MinTrackingConfidence`.
 
-How Windows detection works:
-- Decodes the selected image using WinRT `BitmapDecoder` into BGRA8 bytes, manually converting layout to conform with MediaPipe `Srgb` parameters natively.
-- Builds a MediaPipe `ImageFrame` and runs a `CalculatorGraph` using the pbtxt graph.
-- **Model Resolution:** At runtime, rather than blindly unzipping models from the modern `face_landmarker.task` file (which proved incompatible with the `0.9.2` wrapper architecture causing pipeline logic silently dropping detection tensors), Windows explicitly maps genuine legacy `.tflite` files placed separately in `Resources/Raw`.
-- **C/C++ Interop Stability:** Explicit C# `Dispose()` scopes and typed unmanaged pointers (e.g., `Timestamp(1L)` routing avoiding `IntPtr` address crashes mapping `1`) are implemented to block the Garbage Collector from prematurely destroying the Image and Timestamp context wrappers while the unmanaged background thread asynchronously filters the image, completely resolving Access Violations (`0xc0000005`).
-- Observes the internal loop node pipeline `face_landmarks` (`NormalizedLandmarkList`) rather than decoding the public vector output (`multi_face_landmarks`) to bypass the missing custom `Vector` envelope implementation within `Mediapipe.Net` without breaking pipeline execution.
+### `Services/FaceLandmarkResult.cs`
+Shared result model:
+- `FaceLandmarkResult` containing `Faces` (list of `DetectedFace`), `ImageWidth`, `ImageHeight`.
+- Performance metrics: `ConversionMilliseconds`, `InferenceMilliseconds`, `ResultMappingMilliseconds`, `UsedGpuDelegate`.
+- `DetectionType` enum: `Disabled`, `Landmark`, `Rectangle`, `Mask`.
+- `MaskConfiguration` class for configuring overlay images (filename, position, width multiplier, Y offset).
+- Each `DetectedFace` contains `Landmarks` as normalized `(X, Y)` points.
 
-### Windows landmark count can differ from "478-point mesh"
-Plan.md describes "478-point mesh".
+### `Services/DetectionSettings.cs`
+Global static settings:
+- `TryUseGpu` — when true, Android/iOS attempt GPU delegate (with CPU fallback). Windows is always CPU-only.
+- `InitialDetectionType` — the overlay mode shown at startup.
 
-On Windows, the current implementation sets `with_attention=false` in the graph side packets, natively loading the legacy non-attention models generating exactly **468 landmarks** per face as part of the standalone fallback.
+## UI
 
-Android/iOS continue utilizing the official MediaPipe Tasks framework directly, and appropriately generate up to 478 points containing enhanced iris tracking.
+### `MainPage.xaml` / `MainPage.xaml.cs`
+- Uses DrawnUI's `AppCanvas` (SkiaSharp-based canvas) as the rendering surface.
+- Contains an `AppCamera` control (extends `SkiaCamera`) for live camera preview with face detection overlay.
+- Top bar contains a Debug button (toggles Android fast/slow JNI API) and a `Picker` with four modes:
+  - `Landmark` — green dots at each landmark point
+  - `Rectangle` — bounding box around each face
+  - `Mask (Spider-Man)` — Spider-Man mask overlay anchored to face landmarks
+  - `Hat (Cake)` — cake hat overlay positioned above the forehead
+- `StatusLabel` displays face count and detection benchmark timing.
+- `SkiaLabelFps` shows real-time FPS counter.
+- Constructor-injects `IFaceLandmarkDetector`; includes a parameterless constructor fallback for Shell/DataTemplate scenarios.
 
-### Minor implementation shape differences
-- Android and iOS implementations lazily construct the landmarker (via `GetLandmarker()`) instead of constructing it directly in the class constructor.
-- Plan.md’s Windows verification step (“graceful not supported”) no longer applies; Windows should now detect landmarks.
+### `AppCamera.cs` (extends `SkiaCamera`)
+- Manages the camera-to-detector pipeline: captures preview frames, downscales to a configurable ML dimension, and calls `EnqueuePreviewDetection`.
+- Draws the face overlay (landmarks, rectangles, or masks) directly on the SkiaSharp canvas during rendering.
+- Implements overlay smoothing (interpolation toward latest landmarks) and a per-landmark deadzone to suppress jitter.
+- Exposes events: `PreviewDetectionMeasured`, `PreviewDetectionUpdated`, `PreviewDetectionFailed`.
 
-## Suggested verification (updated)
-- Android/iOS/Windows:
-  - Pick a clear face photo.
-  - Confirm the status label shows detected face count.
-  - Confirm green dots overlay the face when `Landmark` is selected.
-  - Confirm a bounding box overlays the face when `Rectangle` is selected.
-  - Confirm the Spider-Man mask perfectly anchors to the face tilt and proportions when `Mask` is selected.
-- Mac Catalyst:
-  - Pick a photo and confirm a friendly `PlatformNotSupportedException` message is shown.
+### `AppCanvas.cs` (extends `Canvas`)
+- DrawnUI canvas with XAML hot-reload support. Manages singleton instance lifecycle to prevent leaks during hot reload.
 
-##  Other Tasks/Models Compatible
+### `Drawables/LandmarkDrawable.cs`
+- `IDrawable` that renders face overlays using MAUI Graphics:
+  - `Landmark` mode: green dots at each landmark position.
+  - `Rectangle` mode: bounding box computed from min/max of all landmarks.
+  - `Mask` mode: draws a mask/hat image anchored to specific landmark points (nose tip, forehead, chin), scaled to face width, rotated to match face tilt.
+- Uses AspectFit math to map normalized landmark coordinates to view bounds.
 
-The architecture we gave (MediaPipeTasksVision on mobile, and Mediapipe.Net TFLite graphs on Windows) is a generalized pipeline. By simply swapping the model file in Raw and calling a different MediaPipe API class, we can perform entirely distinct computer vision tasks:
+## Dependency Injection
 
-* Hand Landmarking (hand_landmarker.task): Detects 21 3D knuckles and joints per hand. Used for sign language translation, gesture controls (like pinch-to-zoom in VR), or virtual finger-tracking.
-Pose Landmarking (pose_landmarker.task): Maps 33 major body joints (shoulders, elbows, knees, ankles). Used for fitness apps (counting squats, checking yoga form), motion capture for gaming, or fall detection.
-* Object Detection (efficientdet.task): Draws bounding boxes around objects and identifies them from a trained list (e.g., "Car: 98%", "Dog: 85%", "Cup: 70%").
-* Image Segmentation (image_segmenter.task): Performs pixel-perfect separation of the foreground subject from the background. This is the exact technology used to blur your background in Zoom or Teams calls.
-* Image Classification (classifier.task): Doesn't find coordinates, but analyzes the whole image to tell you what it is (e.g., sorting photos into "Landscapes", "Food", "Receipts").
+`MauiProgram.cs`:
+- Registers DrawnUI via `builder.UseDrawnUi(...)` with a portrait desktop window configuration.
+- Platform-specific `IFaceLandmarkDetector` registered as singleton via `#if` conditionals:
+  - Android: `Platforms.Droid.FaceLandmarkDetector`
+  - iOS: `Platforms.iOS.FaceLandmarkDetector`
+  - MacCatalyst: `Platforms.MacCatalyst.FaceLandmarkDetector`
+  - Windows: `Platforms.Windows.FaceLandmarkDetector`
+- `MainPage` registered as transient.
 
-Because we already solved managing C++ unmanaged memory pointers on Windows and hooking the native iOS/Android MediaPipe binaries—adding any of these tasks to your app would mainly just involve parsing different output data structures (e.g., a NormalizedLandmarkList for hands instead of faces).
+## Platform Implementations
+
+### Android (`Platforms/Android/FaceLandmarkDetector.cs`)
+- Uses `AppoMobi.Preview.MediaPipeTasksVision.Android`.
+- Loads the `.task` model via `SetModelAssetPath("face_landmarker.task")`.
+- **Running mode: `LiveStream`** — uses `DetectAsync(mpImage, timestampMs)` with a `ResultListener` callback and `ErrorListener`.
+- Converts incoming RGBA bytes to an Android `Bitmap` (reusing a pooled bitmap), wraps in `MPImage` via `BitmapImageBuilder`.
+- GPU delegate attempted first; falls back to CPU. Controlled by `DetectionSettings.TryUseGpu`.
+- Lazily constructs the `FaceLandmarker` via `GetLandmarker()` (recreated when settings like `MaxFaces` change).
+- Two result-mapping paths: a fast bulk JNI accessor (`FaceLandmarksXY`) and a slow per-landmark wrapper path, toggled via `UseFastApi` static flag (exposed via Debug button in UI).
+- Reports `ConversionMilliseconds`, `InferenceMilliseconds`, `ResultMappingMilliseconds`, and `UsedGpuDelegate` in results.
+
+### iOS (`Platforms/iOS/FaceLandmarkDetector.cs`)
+- Uses `MediaPipeTasksVision.iOS`.
+- Loads the `.task` model from the app bundle via `NSBundle.MainBundle.PathForResource("face_landmarker", "task")`.
+- **Running mode: `LiveStream`** — uses `DetectAsyncImage(mpImage, timestampMs)` with a `MPPFaceLandmarkerLiveStreamDelegate` callback.
+- Converts RGBA bytes to `CGImage` → `UIImage` → `MPPImage`.
+- GPU delegate attempted first via `MPPDelegate.Gpu`. Controlled by `DetectionSettings.TryUseGpu`.
+- Lazily constructs the `MPPFaceLandmarker` via `GetLandmarker()`.
+
+### Mac Catalyst (`Platforms/MacCatalyst/FaceLandmarkDetector.cs`)
+- Stub that raises `PlatformNotSupportedException` via the `PreviewDetectionFailed` event.
+- Also retains a legacy `DetectAsync(Stream)` method (throws `PlatformNotSupportedException`).
+
+### Windows (`Platforms/Windows/FaceLandmarkDetector.cs`)
+- Uses `Mediapipe.Net` (0.9.2) + `Mediapipe.Net.Runtime.CPU` (0.9.1).
+- Loads the legacy `.tflite` models and `.pbtxt` graph config from MAUI raw assets.
+- **Model loading:** Reads the two `.tflite` files from MAUI's `FileSystem.OpenAppPackageFileAsync`, extracts them to disk under `mediapipe-task/face_landmarker/mediapipe/modules/...` so the native C++ graph can find them at the expected relative paths. Uses a `CurrentDirectoryScope` to temporarily set the working directory.
+- **Live preview:** Uses a persistent `LiveGraphSession` that keeps a `CalculatorGraph` running across frames, feeding RGBA→RGB-converted `ImageFrame` packets and polling `face_landmarks` output.
+- **One-shot detection:** Also retains a `DetectAsync(Stream)` method that creates a fresh graph per call, decoding via WinRT `BitmapDecoder` (BGRA8→RGB conversion).
+- Observes the internal graph node `face_landmarks` (`NormalizedLandmarkList`) rather than the public vector output `multi_face_landmarks`, bypassing the missing custom `Vector` envelope in `Mediapipe.Net`.
+- **C/C++ interop stability:** Explicit `Dispose()` scopes and typed unmanaged pointers (e.g., `Timestamp(1L)`) prevent the GC from prematurely destroying wrappers while the unmanaged background thread processes frames, resolving Access Violations (`0xc0000005`).
+- **Landmark count:** `with_attention=false` in graph side packets means Windows generates exactly **468 landmarks** per face (no iris tracking). Android/iOS generate up to **478 landmarks** including iris.
+
+### iOS Privacy
+- `Platforms/iOS/Info.plist` contains both `NSCameraUsageDescription` and `NSPhotoLibraryUsageDescription`.
+
+### Project Configuration (`DetectFaces.csproj`)
+- Target frameworks: `net10.0-android`, `net10.0-ios`, `net10.0-maccatalyst`, `net10.0-windows10.0.19041.0`.
+- Uses `WindowsPackageType=None` (unpackaged).
+- Conditional `MauiAsset` item groups per platform (see [Includes.md](Includes.md)).
+- Conditional NuGet package references per platform.
+- `AndroidStoreUncompressedFileExtensions` set to `.task` for Android.
+
+## Verification
+
+- **Android/iOS/Windows:**
+  - Launch the app — camera preview should start automatically.
+  - Confirm the status label shows detected face count and benchmark timing.
+  - Select `Landmark` — confirm green dots overlay the face mesh.
+  - Select `Rectangle` — confirm a bounding box overlays each face.
+  - Select `Mask (Spider-Man)` — confirm the mask anchors to face tilt and proportions.
+  - Select `Hat (Cake)` — confirm the hat sits above the forehead.
+  - Test with 0 faces, 1 face, multiple faces.
+- **Mac Catalyst:**
+  - Launch and confirm a friendly `PlatformNotSupportedException` message for detection.
+
+## Other Tasks/Models Compatible
+
+The architecture (MediaPipe Tasks on mobile, Mediapipe.Net TFLite graphs on Windows) is a generalized pipeline. By swapping the model file and calling a different MediaPipe API class, entirely distinct computer vision tasks can be performed:
+
+* **Hand Landmarking** (`hand_landmarker.task`): Detects 21 3D knuckles and joints per hand. Used for sign language translation, gesture controls, or virtual finger-tracking.
+* **Pose Landmarking** (`pose_landmarker.task`): Maps 33 major body joints. Used for fitness apps, motion capture, or fall detection.
+* **Object Detection** (`efficientdet.task`): Draws bounding boxes around objects and identifies them from a trained list.
+* **Image Segmentation** (`image_segmenter.task`): Performs pixel-perfect foreground/background separation (the technology behind Zoom/Teams background blur).
+* **Image Classification** (`classifier.task`): Analyzes the whole image to classify it into categories.
+
+Because the app already handles managing C++ unmanaged memory pointers on Windows and hooking the native iOS/Android MediaPipe binaries, adding any of these tasks would mainly involve parsing different output data structures.
 
 ## Face Recognition
 
 Doable as a two-stage pipeline:
 
-* Stage 1 (Current Engine): Use our current FaceLandmarkDetector to find the face. Remember the Rectangle bounding box we just built? You would use those exact Min/Max X and Y coordinates to crop the face out of the original image.
-
-* Stage 2 (New Model): we would feed that cropped, isolated face image into a TFLite/ONNX Face Recognition model. This model outputs a "Face Embedding" (a mathematical vector, usually an array of 128 to 512 floats).
-
-* Comparison: to compare the mathematical distance (Cosine Similarity or Euclidean Distance) between John Doe's saved vector and the newly generated vector. If the distance is below a certain threshold, it's a match.
-
+* **Stage 1 (Current Engine):** Use the current FaceLandmarkDetector to find the face. The Rectangle bounding box (min/max X and Y from landmarks) crops the face out of the original image.
+* **Stage 2 (New Model):** Feed that cropped face image into a TFLite/ONNX Face Recognition model. This outputs a "Face Embedding" (a mathematical vector, usually 128 to 512 floats).
+* **Comparison:** Compare the mathematical distance (Cosine Similarity or Euclidean Distance) between a saved vector and the newly generated vector. If the distance is below a threshold, it's a match.

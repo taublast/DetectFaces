@@ -8,12 +8,12 @@ using Mediapipe.Net.Native;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
-using TestFaces.Services;
+using DetectFaces.Services;
 using Windows.Graphics.Imaging;
 
 using MpImageFormat = Mediapipe.Net.Framework.Protobuf.ImageFormat;
 
-namespace TestFaces.Platforms.Windows;
+namespace DetectFaces.Platforms.Windows;
 
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {

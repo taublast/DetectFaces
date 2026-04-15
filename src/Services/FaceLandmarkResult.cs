@@ -1,4 +1,4 @@
-namespace TestFaces.Services;
+namespace DetectFaces.Services;
 
 public enum MaskPosition
 {

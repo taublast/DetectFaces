@@ -1,7 +1,7 @@
 using DrawnUi.Camera;
 using SkiaSharp;
 using System.Diagnostics;
-using TestFaces.Services;
+using DetectFaces.Services;
  
 
 namespace CameraTests.UI

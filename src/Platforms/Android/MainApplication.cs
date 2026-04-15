@@ -1,7 +1,7 @@
 ﻿using Android.App;
 using Android.Runtime;
 
-namespace TestFaces;
+namespace DetectFaces;
 
 [Application]
 public class MainApplication : MauiApplication

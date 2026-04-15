@@ -2,9 +2,9 @@ using CoreGraphics;
 using Foundation;
 using UIKit;
 using MediaPipeTasksVision;
-using TestFaces.Services;
+using DetectFaces.Services;
 
-namespace TestFaces.Platforms.iOS;
+namespace DetectFaces.Platforms.iOS;
 
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
@@ -209,8 +209,8 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private static FaceLandmarkResult ConvertResult(MPPFaceLandmarkerResult? result, int width, int height)
     {
         var faceLandmarks = result?.FaceLandmarks;
-        var faces = faceLandmarks is NSArray faceLandmarkArray
-            ? new List<DetectedFace>((int)faceLandmarkArray.Count)
+            var faces = faceLandmarks is not null
+                ? new List<DetectedFace>(faceLandmarks.Length)
             : new List<DetectedFace>();
         if (faceLandmarks is not null)
         {
@@ -228,15 +228,14 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         };
     }
 
-    private static DetectedFace MapDetectedFace(NSObject? landmarkList)
+        private static DetectedFace MapDetectedFace(NSArray<MPPNormalizedLandmark>? landmarkList)
     {
-        if (landmarkList is not NSArray arr)
+            if (landmarkList is null)
             return new DetectedFace { Landmarks = [] };
 
-        var points = new List<NormalizedPoint>((int)arr.Count);
-        for (nuint i = 0; i < arr.Count; i++)
+            var points = new List<NormalizedPoint>((int)landmarkList.Count);
+            foreach (var landmark in landmarkList)
         {
-            var landmark = arr.GetItem<MPPNormalizedLandmark>(i);
             points.Add(new NormalizedPoint(landmark.X, landmark.Y));
         }
 

@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 
-namespace TestFaces;
+namespace DetectFaces;
 
 public partial class App : Application
 {

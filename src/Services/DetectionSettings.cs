@@ -1,4 +1,4 @@
-namespace TestFaces.Services;
+namespace DetectFaces.Services;
 
 /// <summary>
 /// Global detection settings shared across all platforms.

@@ -1,8 +1,8 @@
 ﻿<maui:MauiWinUIApplication
-    x:Class="TestFaces.WinUI.App"
+    x:Class="DetectFaces.WinUI.App"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:maui="using:Microsoft.Maui"
-    xmlns:local="using:TestFaces.WinUI">
+    xmlns:local="using:DetectFaces.WinUI">
 
 </maui:MauiWinUIApplication>

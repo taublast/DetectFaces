@@ -1,9 +1,9 @@
 ﻿global using DrawnUi.Draw;
 
 using Microsoft.Extensions.Logging;
-using TestFaces.Services;
+using DetectFaces.Services;
 
-namespace TestFaces;
+namespace DetectFaces;
 
 public static class MauiProgram
 {

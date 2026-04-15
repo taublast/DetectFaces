@@ -1,6 +1,6 @@
 ﻿using Foundation;
 
-namespace TestFaces;
+namespace DetectFaces;
 
 [Register("AppDelegate")]
 public class AppDelegate : MauiUIApplicationDelegate

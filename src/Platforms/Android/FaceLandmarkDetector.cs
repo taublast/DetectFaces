@@ -3,22 +3,19 @@ using MediaPipe.Tasks.Core;
 using MediaPipe.Tasks.Vision.Core;
 using MediaPipe.Tasks.Vision.FaceLandmarker;
 using System.Diagnostics;
-using TestFaces.Services;
+using DetectFaces.Services;
 using MPImage = MediaPipe.Framework.Image.MPImage;
 using BitmapImageBuilder = MediaPipe.Framework.Image.BitmapImageBuilder;
 
-namespace TestFaces.Platforms.Droid;
+namespace DetectFaces.Platforms.Droid;
 
 /// <summary>
 /// https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/android
 /// </summary>
-public class FaceLandmarkDetector : IFaceLandmarkDetector
+public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
 {
     private FaceLandmarker? _landmarker;
     private readonly object _landmarkerSync = new();
-    private readonly object _pendingSync = new();
-    private readonly ResultListener _resultListener;
-    private readonly ErrorListener _errorListener;
     private bool _usingGpuDelegate;
     private long _videoTimestampMs;
     private int _maxFaces = 2;
@@ -29,7 +26,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private int[]? _livePixels;
     private int _liveWidth;
     private int _liveHeight;
-    private PendingDetection? _pendingDetection;
+    private bool _disposed;
 
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
 
@@ -91,14 +88,10 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         }
     }
 
-    public FaceLandmarkDetector()
-    {
-        _resultListener = new ResultListener(this);
-        _errorListener = new ErrorListener(this);
-    }
-
     private FaceLandmarker GetLandmarker()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         if (_landmarker is not null)
             return _landmarker;
 
@@ -149,9 +142,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             .SetMinFaceDetectionConfidence(new Java.Lang.Float(_minFaceDetectionConfidence))
             .SetMinFacePresenceConfidence(new Java.Lang.Float(_minFacePresenceConfidence))
             .SetMinTrackingConfidence(new Java.Lang.Float(_minTrackingConfidence))
-            .SetRunningMode(RunningMode.LiveStream)
-            .SetResultListener(_resultListener)
-            .SetErrorListener(_errorListener)
+            .SetRunningMode(RunningMode.Video)
             .Build();
 
         return FaceLandmarker.CreateFromOptions(
@@ -160,6 +151,8 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
     public void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         try
         {
             if (rgbaBytes == null || request.Width <= 0 || request.Height <= 0 || rgbaBytes.Length < request.Width * request.Height * 4)
@@ -187,10 +180,10 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
             var mpImage = new BitmapImageBuilder(bitmap).Build();
             convertStopwatch.Stop();
 
-            BeginPendingPreviewDetection(request, convertStopwatch.Elapsed.TotalMilliseconds);
-
             var timestampMs = Interlocked.Increment(ref _videoTimestampMs);
-            GetLandmarker().DetectAsync(mpImage, timestampMs);
+            var conversionMilliseconds = convertStopwatch.Elapsed.TotalMilliseconds;
+
+            _ = Task.Run(() => ProcessPreviewDetection(request, mpImage, timestampMs, conversionMilliseconds));
         }
         catch (Exception ex)
         {
@@ -216,53 +209,49 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         return Math.Clamp(value, 0f, 1f);
     }
 
-    private void BeginPendingPreviewDetection(PreviewDetectionRequest request, double conversionMilliseconds)
+    private void ProcessPreviewDetection(PreviewDetectionRequest request, MPImage mpImage, long timestampMs, double conversionMilliseconds)
     {
-        lock (_pendingSync)
+        try
         {
-            _pendingDetection = new PendingDetection(request, conversionMilliseconds, Stopwatch.GetTimestamp());
+            var inferenceStopwatch = Stopwatch.StartNew();
+
+            using (mpImage)
+            {
+                using var result = GetLandmarker().DetectForVideo(mpImage, timestampMs);
+
+                inferenceStopwatch.Stop();
+
+                if (_disposed)
+                    return;
+
+                var converted = result is null
+                    ? new FaceLandmarkResult
+                    {
+                        Faces = [],
+                        ImageWidth = request.Width,
+                        ImageHeight = request.Height,
+                        ConversionMilliseconds = conversionMilliseconds,
+                        InferenceMilliseconds = inferenceStopwatch.Elapsed.TotalMilliseconds,
+                        UsedGpuDelegate = _usingGpuDelegate,
+                    }
+                    : ConvertResult(
+                        result,
+                        request.Width,
+                        request.Height,
+                        conversionMilliseconds,
+                        inferenceStopwatch.Elapsed.TotalMilliseconds,
+                        _usingGpuDelegate);
+
+                RaisePreviewDetectionCompleted(request, converted);
+            }
         }
-    }
-
-    private void OnLiveStreamResult(FaceLandmarkerResult result, MPImage inputImage)
-    {
-        PendingDetection? pendingDetection;
-
-        lock (_pendingSync)
+        catch (Exception ex)
         {
-            pendingDetection = _pendingDetection;
-            if (pendingDetection == null)
+            if (_disposed)
                 return;
 
-            _pendingDetection = null;
+            RaisePreviewDetectionFailed(request, ex);
         }
-
-        var converted = ConvertResult(
-            result,
-            pendingDetection.Request.Width,
-            pendingDetection.Request.Height,
-            pendingDetection.ConversionMilliseconds,
-            Stopwatch.GetElapsedTime(pendingDetection.InferenceStartTicks).TotalMilliseconds,
-            _usingGpuDelegate);
-
-        RaisePreviewDetectionCompleted(pendingDetection.Request, converted);
-    }
-
-    private void OnLiveStreamError(Java.Lang.RuntimeException error)
-    {
-        PendingDetection? pendingDetection;
-
-        lock (_pendingSync)
-        {
-            pendingDetection = _pendingDetection;
-            _pendingDetection = null;
-        }
-
-        if (pendingDetection == null)
-            return;
-
-        var exception = new InvalidOperationException($"Android FaceLandmarker failed: {error.Message}", error);
-        RaisePreviewDetectionFailed(pendingDetection.Request, exception);
     }
 
     private void RaisePreviewDetectionCompleted(PreviewDetectionRequest request, FaceLandmarkResult result)
@@ -273,6 +262,26 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private void RaisePreviewDetectionFailed(PreviewDetectionRequest request, Exception exception)
     {
         PreviewDetectionFailed?.Invoke(this, new PreviewDetectionFailedEventArgs(request, exception));
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        ResetLandmarker();
+
+        var liveBitmap = _liveBitmap;
+        _liveBitmap = null;
+        liveBitmap?.Dispose();
+
+        _livePixels = null;
+        _liveWidth = 0;
+        _liveHeight = 0;
+
+        GC.SuppressFinalize(this);
     }
 
     private Bitmap GetOrCreateLiveBitmap(int width, int height)
@@ -374,57 +383,4 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         return new DetectedFace { Landmarks = points };
     }
 
-    private sealed class ResultListener : Java.Lang.Object, OutputHandler.IResultListener
-    {
-        private readonly FaceLandmarkDetector _owner;
-
-        public ResultListener(FaceLandmarkDetector owner)
-        {
-            _owner = owner;
-        }
-
-        public void Run(Java.Lang.Object result, Java.Lang.Object inputImage)
-        {
-            try
-            {
-                _owner.OnLiveStreamResult((FaceLandmarkerResult)result, (MPImage)inputImage);
-            }
-            finally
-            {
-                (result as IDisposable)?.Dispose();
-                (inputImage as IDisposable)?.Dispose();
-            }
-        }
-    }
-
-    private sealed class ErrorListener : Java.Lang.Object, IErrorListener
-    {
-        private readonly FaceLandmarkDetector _owner;
-
-        public ErrorListener(FaceLandmarkDetector owner)
-        {
-            _owner = owner;
-        }
-
-        public void OnError(Java.Lang.RuntimeException error)
-        {
-            _owner.OnLiveStreamError(error);
-        }
-    }
-
-    private sealed class PendingDetection
-    {
-        public PendingDetection(PreviewDetectionRequest request, double conversionMilliseconds, long inferenceStartTicks)
-        {
-            Request = request;
-            ConversionMilliseconds = conversionMilliseconds;
-            InferenceStartTicks = inferenceStartTicks;
-        }
-
-        public PreviewDetectionRequest Request { get; }
-
-        public double ConversionMilliseconds { get; }
-
-        public long InferenceStartTicks { get; }
-    }
 }

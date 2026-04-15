@@ -3,13 +3,15 @@ using DrawnUi;
 using DrawnUi.Camera;
 using System.Diagnostics;
 using AppoMobi.Specials;
-using TestFaces.Services;
+using DetectFaces.Services;
 
-namespace TestFaces;
+namespace DetectFaces;
 
 public partial class MainPage : ContentPage
 {
     private AppCamera.PreviewDetectionMetrics? _lastPreviewMetrics;
+    private bool _uiLoaded;
+    private bool _hardwareAttached;
 
     #region XAML HotReload
 
@@ -24,6 +26,7 @@ public partial class MainPage : ContentPage
 
         if (Handler == null)
         {
+            AttachHardware(false);
             AppCanvas.WasReloaded -= XamlHotReloadDetected;
             MainCanvas?.DisconnectHandlers();
             MainCanvas?.Dispose();
@@ -81,10 +84,28 @@ public partial class MainPage : ContentPage
 
     public void OnUiLoaded()
     {
-        CameraControl.Detector = _detector;
-        _detector.MaxFaces = CameraControl.MaxNumFaces;
-        AttachHardware(true);
+        _uiLoaded = true;
+        EnsureHardwareAttached();
         OnModeChanged(null, EventArgs.Empty);
+    }
+
+    protected override void OnAppearing()
+    {
+        base.OnAppearing();
+
+        if (_uiLoaded)
+        {
+            EnsureHardwareAttached();
+        }
+    }
+
+    protected override void OnDisappearing()
+    {
+        AttachHardware(false);
+        ModePicker?.Unfocus();
+        Unfocus();
+
+        base.OnDisappearing();
     }
 
     // Fallback for Shell DataTemplate resolution (bypasses DI)
@@ -164,10 +185,10 @@ public partial class MainPage : ContentPage
     private void OnDebugClicked(object? sender, EventArgs e)
     {
 #if ANDROID
-        TestFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi =
-            !TestFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi;
+        DetectFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi =
+            !DetectFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi;
 
-        var state = TestFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi ? "YES" : "NO";
+        var state = DetectFaces.Platforms.Droid.FaceLandmarkDetector.UseFastApi ? "YES" : "NO";
         DebugBtn.Text = $"Use Fast API: {state}";
 #endif
     }
@@ -176,11 +197,25 @@ public partial class MainPage : ContentPage
 
     #region CAMERA
 
+    private void EnsureHardwareAttached()
+    {
+        if (_hardwareAttached)
+            return;
+
+        CameraControl.Detector = _detector;
+        _detector.MaxFaces = CameraControl.MaxNumFaces;
+        AttachHardware(true);
+    }
+
     public void AttachHardware(bool subscribe)
     {
         if (subscribe)
         {
+            if (_hardwareAttached)
+                return;
+
             AttachHardware(false);
+            CameraControl.Detector = _detector;
 
             CameraControl.PermissionsResult += OnPermissionsResultChanged;
             CameraControl.StateChanged += CameraControlOnStateChanged;
@@ -190,6 +225,7 @@ public partial class MainPage : ContentPage
             CameraControl.PreviewDetectionFailed += OnPreviewDetectionFailed;
 
             CameraControl.IsOn = true;
+            _hardwareAttached = true;
 
             Debug.WriteLine($"Camera attached {CameraControl.Uid}");
         }
@@ -197,6 +233,9 @@ public partial class MainPage : ContentPage
         {
             if (CameraControl != null)
             {
+                _hardwareAttached = false;
+                CameraControl.IsOn = false;
+                CameraControl.Detector = null;
                 CameraControl.PermissionsResult -= OnPermissionsResultChanged;
                 CameraControl.StateChanged -= CameraControlOnStateChanged;
                 CameraControl.OnError -= OnCameraError;
