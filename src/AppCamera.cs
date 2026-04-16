@@ -83,7 +83,7 @@ namespace CameraTests.UI
         public AppCamera()
         {
             //set defaults for this camera, we set base to be able to do video recording with sound
-            NeedPermissionsSet = NeedPermissions.Camera;// | NeedPermissions.Gallery | NeedPermissions.Microphone;
+            NeedPermissionsSet = NeedPermissions.Camera | NeedPermissions.Gallery;// | NeedPermissions.Microphone;
 
             //GPS metadata
             //this.InjectGpsLocation = true;
