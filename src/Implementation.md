@@ -113,9 +113,9 @@ Global static settings:
 ### iOS (`Platforms/iOS/FaceLandmarkDetector.cs`)
 - Uses `MediaPipeTasksVision.iOS`.
 - Loads the `.task` model from the app bundle via `NSBundle.MainBundle.PathForResource("face_landmarker", "task")`.
-- **Running mode: `LiveStream`** — uses `DetectAsyncImage(mpImage, timestampMs)` with a `MPPFaceLandmarkerLiveStreamDelegate` callback.
-- Converts RGBA bytes to `CGImage` → `UIImage` → `MPPImage`.
-- GPU delegate attempted first via `MPPDelegate.Gpu`. Controlled by `DetectionSettings.TryUseGpu`.
+- **Running mode: `Video`** — runs `DetectVideoFrame(mpImage, timestampMs)` on a background task so inference stays off the camera callback thread.
+- Converts RGBA bytes to `CGImage` → `UIImage` → `MPPImage`, and maps the camera rotation into an explicit `MPPImage` orientation before inference.
+- GPU delegate attempted first via `MPPDelegate.Gpu`; falls back to CPU automatically if GPU initialization fails. Controlled by `DetectionSettings.TryUseGpu`.
 - Lazily constructs the `MPPFaceLandmarker` via `GetLandmarker()`.
 
 ### Mac Catalyst (`Platforms/MacCatalyst/FaceLandmarkDetector.cs`)

@@ -224,7 +224,6 @@ public partial class MainPage : ContentPage
             CameraControl.PreviewDetectionUpdated += OnPreviewDetectionUpdated;
             CameraControl.PreviewDetectionFailed += OnPreviewDetectionFailed;
 
-            CameraControl.IsOn = true;
             _hardwareAttached = true;
 
             Debug.WriteLine($"Camera attached {CameraControl.Uid}");
@@ -328,6 +327,18 @@ public partial class MainPage : ContentPage
 
     #endregion
 
+    private void MainCanvas_OnWillFirstTimeDraw(object? sender, SkiaDrawingContext? e)
+    {
+        Tasks.StartDelayed(TimeSpan.FromMilliseconds(500), () =>
+        {
+            CameraControl.IsOn = true;
+        });
+    }
+
+    private void Button_OnClicked(object? sender, EventArgs e)
+    {
+        CameraControl.IsOn = !CameraControl.IsOn;
+    }
 }
 
 

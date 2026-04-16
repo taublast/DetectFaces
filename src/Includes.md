@@ -55,8 +55,9 @@ This ensures models built for Windows do not pollute iOS installations, and vice
 ### iOS
 * **Files Used:** `face_landmarker.task`
 * **Implementation:** iOS utilizes the official `MediaPipeTasksVision.iOS` library. It extracts the path to the `.task` model using the native `NSBundle` resource locator and hands it to the modern Tasks API to generate landmarks (up to 478 points).
-* **Running Mode:** `LiveStream` — frames are fed asynchronously via `DetectAsyncImage`, and results arrive via a `MPPFaceLandmarkerLiveStreamDelegate` callback.
-* **GPU Support:** Attempts GPU delegate first via `MPPDelegate.Gpu`. Controlled by `DetectionSettings.TryUseGpu`.
+* **Running Mode:** `Video` — preview frames are processed on a background task via `DetectVideoFrame`, which keeps the detector contract synchronous while avoiding blocking the camera callback thread.
+* **Orientation Handling:** The detector maps the camera frame rotation into an explicit `MPPImage` orientation before inference so the iOS Tasks runtime sees an upright image.
+* **GPU Support:** Attempts GPU delegate first via `MPPDelegate.Gpu`; falls back to CPU automatically if GPU initialization fails. Controlled by `DetectionSettings.TryUseGpu`.
 
 ### Windows
 * **Files Used:** `face_landmark_front_cpu.pbtxt`, `face_detection_short_range.tflite`, `face_landmark.tflite`

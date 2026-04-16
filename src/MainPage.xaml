@@ -41,8 +41,8 @@
         <Grid Grid.Row="1" VerticalOptions="Fill" HorizontalOptions="Fill">
 
             <ui:AppCanvas
+                WillFirstTimeDraw="MainCanvas_OnWillFirstTimeDraw"
                 x:Name="MainCanvas"
-                BackgroundColor="Black"
                 Gestures="Lock"
                 HorizontalOptions="Fill"
                 RenderingMode="Accelerated"
@@ -51,8 +51,8 @@
                 <draw:SkiaLayout HorizontalOptions="Fill" VerticalOptions="Fill">
 
                     <ui:AppCamera
+                        BackgroundColor="SlateGray"
                         x:Name="CameraControl"
-                        NeedPermissionsSet="Camera"
                         HorizontalOptions="Fill"
                         VerticalOptions="Fill" />
 
@@ -81,10 +81,21 @@
             </ui:AppCanvas>
 
             <Label
+                HeightRequest="40"
+                VerticalOptions="Start"
                 TextColor="LightGreen"
+                BackgroundColor="Black"
+                Padding="4"
                 FontSize="12"
                 x:Name="StatusLabel"
                 Text="" />
+
+            <!--<Button 
+                WidthRequest="100"
+                HeightRequest="50"
+                VerticalOptions="Center"
+                HorizontalOptions="Center"
+                Text="Toggle" Clicked="Button_OnClicked"/>-->
 
         </Grid>
 
