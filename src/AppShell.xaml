@@ -7,7 +7,7 @@
     Title="DetectFaces">
 
     <ShellContent
-        Title="MAUI Face Detection"
+        Title="MAUI MediaPipe Face Detection"
         ContentTemplate="{DataTemplate local:MainPage}"
         Route="MainPage" />
 

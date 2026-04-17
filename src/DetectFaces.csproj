@@ -84,7 +84,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="DrawnUi.Maui.Camera" Version="1.9.7.6" />
+		<!--<PackageReference Include="DrawnUi.Maui.Camera" Version="1.9.7.6" />-->
 		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.5" />
 	</ItemGroup>
@@ -101,6 +101,10 @@
 	<ItemGroup Condition="$(TargetFramework.Contains('windows'))">
 		<PackageReference Include="Mediapipe.Net" Version="0.9.2" />
 		<PackageReference Include="Mediapipe.Net.Runtime.CPU" Version="0.9.1" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <ProjectReference Include="..\..\DrawnUi.Maui.Camera\src\Lib\DrawnUi.Maui.Camera.csproj" />
 	</ItemGroup>
  
 </Project>
