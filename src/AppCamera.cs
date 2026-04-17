@@ -1,7 +1,7 @@
+using DetectFaces.Services;
 using DrawnUi.Camera;
 using SkiaSharp;
 using System.Diagnostics;
-using DetectFaces.Services;
  
 
 namespace CameraTests.UI
@@ -2278,5 +2278,34 @@ namespace CameraTests.UI
             int Rotation);
 
         #endregion
+
+        void RefreshGpsLocationIfNeeded()
+        {
+            if (InjectGpsLocation)
+            {
+                MainThread.BeginInvokeOnMainThread(() => { _ = RefreshGpsLocation(); });
+            }
+        }
+
+        public override void OnStateChanged(HardwareState state)
+        {
+            base.OnStateChanged(state);
+
+            if (state == HardwareState.On)
+            {
+                if (Display != null)
+                {
+                    Display.Blur = 0;
+                }
+                RefreshGpsLocationIfNeeded();
+            }
+            else
+            {
+                if (Display != null)
+                {
+                    Display.Blur = 10;
+                }
+            }
+        }
     }
 }
