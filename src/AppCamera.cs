@@ -9,6 +9,94 @@ namespace CameraTests.UI
     public partial class AppCamera : SkiaCamera
     {
         /// <summary>
+        /// Captures the newest preview frame for ML and feeds it into a coalescing detection pipeline.
+        /// Only one preview detection is allowed to run at a time. If a frame arrives while detection
+        /// is already in flight, this method keeps only the most recent pending request and drops older
+        /// intermediate frames so overlay latency stays low.
+        /// </summary>
+        /// <param name="frame">Temporary raw-frame context. Use <see cref="RawCameraFrame.TryGetRgba"/> for AI input.</param>
+        protected override void OnRawFrameAvailable(RawCameraFrame frame)
+        {
+            base.OnRawFrameAvailable(frame);
+
+            if (!EnablePreviewDetection || Detector == null)
+                return;
+
+            PendingDetectionRequest? requestToSubmit = null;
+            IFaceLandmarkDetector? detector = null;
+
+            try
+            {
+                lock (_detectionSync)
+                {
+                    if (_stopDetectionWorker || Detector == null)
+                        return;
+
+                    int targetWidth;
+                    int targetHeight;
+                    int detectionRotation;
+                    bool reusedCachedFrame = false;
+                    int writeBufferIndex = _activeDetectionBufferIndex == 0 ? 1 : 0;
+                    var resizeStopwatch = Stopwatch.StartNew();
+
+                    if (ReuseFirstMlFrameForPreviewDetection && _hasCachedMlFrame)
+                    {
+                        targetWidth = _cachedMlWidth;
+                        targetHeight = _cachedMlHeight;
+                        detectionRotation = _cachedMlRotation;
+                        reusedCachedFrame = true;
+                    }
+                    else
+                    {
+                        if (!TryPrepareMlFrame(frame, writeBufferIndex, out targetWidth, out targetHeight))
+                            return;
+
+                        if (!frame.TryGetRgba(targetWidth, targetHeight, _mlFrameBuffers[writeBufferIndex]))
+                            return;
+
+                        detectionRotation = frame.Rotation;
+
+                        if (ReuseFirstMlFrameForPreviewDetection)
+                        {
+                            _cachedMlWidth = targetWidth;
+                            _cachedMlHeight = targetHeight;
+                            _cachedMlRotation = frame.Rotation;
+                            _hasCachedMlFrame = true;
+                        }
+                    }
+
+                    resizeStopwatch.Stop();
+
+                    var request = new PendingDetectionRequest(
+                        writeBufferIndex,
+                        targetWidth,
+                        targetHeight,
+                        detectionRotation,
+                        resizeStopwatch.Elapsed.TotalMilliseconds,
+                        reusedCachedFrame);
+
+                    if (_activeDetectionBufferIndex >= 0)
+                    {
+                        _queuedDetectionRequest = request;
+                        return;
+                    }
+
+                    _activeDetectionBufferIndex = request.BufferIndex;
+                    detector = Detector;
+                    requestToSubmit = request;
+                }
+
+                SubmitPreviewDetection(detector, requestToSubmit);
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        #region Detection Configuration
+
+        /// <summary>
         /// Performance control:
         ///
         /// Example:
@@ -254,6 +342,10 @@ namespace CameraTests.UI
             return Math.Clamp(value, 0f, 1f);
         }
 
+        #endregion
+
+        #region Lifecycle
+
         /// <summary>
         /// Loads or clears the bitmap used for mask rendering so preview and recording overlays use the
         /// same already-decoded asset.
@@ -303,6 +395,36 @@ namespace CameraTests.UI
             StopDetectionWorker();
             base.OnDisposing();
         }
+
+        /// <summary>
+        /// Disposes paints, bitmaps, and filter state owned by this sample camera before the control tree
+        /// is torn down.
+        /// </summary>
+        public override void OnWillDisposeWithChildren()
+        {
+            base.OnWillDisposeWithChildren();
+
+            _paintRec?.Dispose();
+            _paintRec = null;
+            _paintPreview?.Dispose();
+            _paintPreview = null;
+            _detectionStrokePaint?.Dispose();
+            _detectionStrokePaint = null;
+            _detectionFillPaint?.Dispose();
+            _detectionFillPaint = null;
+            _maskPaint?.Dispose();
+            _maskPaint = null;
+            MaskBitmap?.Dispose();
+            MaskBitmap = null;
+            MaskImage?.Dispose();
+            MaskImage = null;
+            _filtersX = null;
+            _filtersY = null;
+        }
+
+        #endregion
+
+        #region Audio
 
         /// <summary>
         /// Backing bindable property for <see cref="UseGain"/>.
@@ -372,122 +494,13 @@ namespace CameraTests.UI
             }
         }
 
-        /// <summary>
-        /// Disposes paints, bitmaps, and filter state owned by this sample camera before the control tree
-        /// is torn down.
-        /// </summary>
-        public override void OnWillDisposeWithChildren()
-        {
-            base.OnWillDisposeWithChildren();
+        #endregion
 
-            _paintRec?.Dispose();
-            _paintRec = null;
-            _paintPreview?.Dispose();
-            _paintPreview = null;
-            _detectionStrokePaint?.Dispose();
-            _detectionStrokePaint = null;
-            _detectionFillPaint?.Dispose();
-            _detectionFillPaint = null;
-            _maskPaint?.Dispose();
-            _maskPaint = null;
-            MaskBitmap?.Dispose();
-            MaskBitmap = null;
-            MaskImage?.Dispose();
-            MaskImage = null;
-            _filtersX = null;
-            _filtersY = null;
-        }
-
-        /// <summary>
-        /// Captures the newest preview frame for ML and feeds it into a coalescing detection pipeline.
-        /// Only one preview detection is allowed to run at a time. If a frame arrives while detection
-        /// is already in flight, this method keeps only the most recent pending request and drops older
-        /// intermediate frames so overlay latency stays low.
-        /// </summary>
-        /// <param name="rawImage">The latest camera frame provided by <see cref="SkiaCamera"/>.</param>
-        /// <param name="rotation">The rotation associated with <paramref name="rawImage"/>.</param>
-        protected override void OnRawFrameAcquired(SKImage rawImage, int rotation)
-        {
-            base.OnRawFrameAcquired(rawImage, rotation);
-
-            if (!EnablePreviewDetection || Detector == null)
-                return;
-
-            PendingDetectionRequest? requestToSubmit = null;
-            IFaceLandmarkDetector? detector = null;
-
-            try
-            {
-                lock (_detectionSync)
-                {
-                    if (_stopDetectionWorker || Detector == null)
-                        return;
-
-                    int targetWidth;
-                    int targetHeight;
-                    int detectionRotation;
-                    bool reusedCachedFrame = false;
-                    int writeBufferIndex = _activeDetectionBufferIndex == 0 ? 1 : 0;
-                    var resizeStopwatch = Stopwatch.StartNew();
-
-                    if (ReuseFirstMlFrameForPreviewDetection && _hasCachedMlFrame)
-                    {
-                        targetWidth = _cachedMlWidth;
-                        targetHeight = _cachedMlHeight;
-                        detectionRotation = _cachedMlRotation;
-                        reusedCachedFrame = true;
-                    }
-                    else
-                    {
-                        if (!TryPrepareMlFrame(rawImage, writeBufferIndex, out targetWidth, out targetHeight))
-                            return;
-
-                        if (!TryGetMLFrame(rawImage, targetWidth, targetHeight, _mlFrameBuffers[writeBufferIndex]))
-                            return;
-
-                        detectionRotation = rotation;
-
-                        if (ReuseFirstMlFrameForPreviewDetection)
-                        {
-                            _cachedMlWidth = targetWidth;
-                            _cachedMlHeight = targetHeight;
-                            _cachedMlRotation = rotation;
-                            _hasCachedMlFrame = true;
-                        }
-                    }
-
-                    resizeStopwatch.Stop();
-
-                    var request = new PendingDetectionRequest(
-                        writeBufferIndex,
-                        targetWidth,
-                        targetHeight,
-                        detectionRotation,
-                        resizeStopwatch.Elapsed.TotalMilliseconds,
-                        reusedCachedFrame);
-
-                    if (_activeDetectionBufferIndex >= 0)
-                    {
-                        _queuedDetectionRequest = request;
-                        return;
-                    }
-
-                    _activeDetectionBufferIndex = request.BufferIndex;
-                    detector = Detector;
-                    requestToSubmit = request;
-                }
-
-                SubmitPreviewDetection(detector, requestToSubmit);
-            }
-            catch
-            {
-                throw;
-            }
-        }
+        #region Detection Pipeline
 
         /// <summary>
         /// Submits a prepared preview-detection request to the detector using the buffer selected in
-        /// <see cref="OnRawFrameAcquired(SKImage, int)"/>. On submission failure, the active slot is
+        /// <see cref="OnRawFrameAvailable(RawCameraFrame)"/>. On submission failure, the active slot is
         /// released so a newer queued frame can still continue through the pipeline.
         /// </summary>
         /// <param name="detector">The detector instance that should process the request.</param>
@@ -624,28 +637,18 @@ namespace CameraTests.UI
         /// Chooses the ML working size for the incoming frame and ensures the selected staging buffer is
         /// large enough to hold the converted RGBA pixels.
         /// </summary>
-        /// <param name="rawImage">The source image received from the camera, if available.</param>
+        /// <param name="frame">The source raw-frame context received from the camera.</param>
         /// <param name="bufferIndex">The index of the reusable ML buffer that should receive the frame.</param>
         /// <param name="targetWidth">Receives the scaled width chosen for ML processing.</param>
         /// <param name="targetHeight">Receives the scaled height chosen for ML processing.</param>
         /// <returns><see langword="true"/> when a valid ML frame size was prepared; otherwise <see langword="false"/>.</returns>
-        private bool TryPrepareMlFrame(SKImage? rawImage, int bufferIndex, out int targetWidth, out int targetHeight)
+        private bool TryPrepareMlFrame(RawCameraFrame frame, int bufferIndex, out int targetWidth, out int targetHeight)
         {
             targetWidth = 0;
             targetHeight = 0;
 
-            int sourceWidth = rawImage?.Width ?? 0;
-            int sourceHeight = rawImage?.Height ?? 0;
-
-            if (sourceWidth <= 0 || sourceHeight <= 0)
-            {
-                var format = CurrentVideoFormat;
-                if (format != null)
-                {
-                    sourceWidth = format.Width;
-                    sourceHeight = format.Height;
-                }
-            }
+            int sourceWidth = frame.SourceWidth;
+            int sourceHeight = frame.SourceHeight;
 
             if (sourceWidth <= 0 || sourceHeight <= 0)
                 return false;
@@ -700,6 +703,10 @@ namespace CameraTests.UI
 
             _mlFrameBuffers[bufferIndex] = new byte[requiredBytes];
         }
+
+        #endregion
+
+        #region Diagnostics Overlay
 
         /// <summary>
         /// Draws the sample's recording-state diagnostics directly into the current preview or recording
@@ -766,8 +773,9 @@ namespace CameraTests.UI
             //}
         }
 
+        #endregion
 
-        #region DRAWN LAYOUT
+        #region Overlay State
 
         private SKPaint? _paintPreview;
         private SKPaint? _paintRec;
@@ -1142,6 +1150,10 @@ namespace CameraTests.UI
                 }
             }
         }
+
+        #endregion
+
+        #region Overlay Smoothing
 
         /// <summary>
         /// Produces the rendered detection state used by the overlay renderer, applying prediction,
@@ -1879,6 +1891,10 @@ namespace CameraTests.UI
             }
         }
 
+        #endregion
+
+        #region Detection Rendering
+
         /// <summary>
         /// Lazily creates and updates the Skia paints used by landmark, rectangle, and mask overlays for
         /// the current frame scale.
@@ -2064,6 +2080,10 @@ namespace CameraTests.UI
             return rotation;
         }
 
+        #endregion
+
+        #region Overlay Layouts
+
         protected SkiaLayout? OverlayPreview;
         protected SkiaLayout? OverlayRecording;
 
@@ -2100,6 +2120,10 @@ namespace CameraTests.UI
             _rectFramePreview = SKRect.Empty;
             _rectFrameRecording = SKRect.Empty;
         }
+
+        #endregion
+
+        #region Nested Types
 
         /// <summary>
         /// Immutable detector output captured at a specific completion time and orientation.
@@ -2279,6 +2303,8 @@ namespace CameraTests.UI
 
         #endregion
 
+        #region Hardware State
+
         void RefreshGpsLocationIfNeeded()
         {
             if (InjectGpsLocation)
@@ -2307,5 +2333,7 @@ namespace CameraTests.UI
                 }
             }
         }
+
+        #endregion
     }
 }
