@@ -291,9 +291,8 @@ public partial class MainPage : ContentPage
         var metrics = _lastPreviewMetrics;
 
         //SHORT
-        StatusLabel.Text = $"{facesText}  benchmark {metrics.DetectionMilliseconds:F1}";
-
-        return;
+        //StatusLabel.Text = $"{facesText}  benchmark {metrics.DetectionMilliseconds:F1}";
+        //return;
 
         //FULL
 

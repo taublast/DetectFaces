@@ -129,17 +129,17 @@ namespace CameraTests.UI
         /// <summary>
         /// Default minimum confidence threshold for the face-detection stage.
         /// </summary>
-        private const float DefaultMinFaceDetectionConfidence = 0.2f;
+        private const float DefaultMinFaceDetectionConfidence = 0.75f;
 
         /// <summary>
         /// Default minimum confidence threshold for the face-presence stage.
         /// </summary>
-        private const float DefaultMinFacePresenceConfidence = 0.2f;
+        private const float DefaultMinFacePresenceConfidence = 0.75f;
 
         /// <summary>
         /// Default minimum confidence threshold for landmark tracking.
         /// </summary>
-        private const float DefaultMinTrackingConfidence = 0.2f;
+        private const float DefaultMinTrackingConfidence = 0.75f;
 
         /// <summary>
         /// Time constant for overlay interpolation toward the latest detected landmarks.
@@ -318,7 +318,7 @@ namespace CameraTests.UI
         /// </summary>
         public event EventHandler<Exception>? PreviewDetectionFailed;
 
-        private int _maxNumFaces = 2;
+        private int _maxNumFaces = 1;
 
         /// <summary>
         /// Pushes the current camera-side detection settings into the active detector instance.
