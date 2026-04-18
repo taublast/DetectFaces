@@ -14,13 +14,10 @@ public static class MauiProgram
 
         builder.UseDrawnUi(new()
         {
-            UseDesktopKeyboard = true,
-
-            //mobile portrait-like dimensions for desktop 
             DesktopWindow = new()
             {
-                Height = 800,
-                Width = 375,
+                Height = 600,
+                Width = 500,
             }
         });
 

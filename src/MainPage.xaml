@@ -9,7 +9,7 @@
     <Grid
         VerticalOptions="Fill" HorizontalOptions="Fill"
         Padding="16"
-        BackgroundColor="Grey"
+        BackgroundColor="DarkViolet"
         RowDefinitions="Auto,*"
         RowSpacing="12">
 
@@ -18,12 +18,18 @@
             Grid.Row="0"
             Spacing="12"
             VerticalOptions="Center">
-            <Button
+
+            <!--<Button
                 x:Name="DebugBtn"
                 Clicked="OnDebugClicked"
-                Text="Debug" />
+                Text="Debug" />-->
 
-            <Picker
+            <Label 
+                FontAttributes="Bold"
+                VerticalOptions="Center"
+                Text="Mask:"/>
+
+                <Picker
                 x:Name="ModePicker"
                 SelectedIndexChanged="OnModeChanged"
                 VerticalOptions="Center">
@@ -51,7 +57,7 @@
                 <draw:SkiaLayout HorizontalOptions="Fill" VerticalOptions="Fill">
 
                     <ui:AppCamera
-                        BackgroundColor="SlateGray"
+                        BackgroundColor="BlueViolet"
                         x:Name="CameraControl"
                         HorizontalOptions="Fill"
                         VerticalOptions="Fill" />
@@ -65,7 +71,7 @@
                         x:Name="StatusLabel"
                         Text="" />-->
 
-                    <draw:SkiaLabelFps
+                    <!--<draw:SkiaLabelFps
                         UseCache="GPU"
                         Margin="0,0,4,24"
                         BackgroundColor="DarkRed"
@@ -74,7 +80,7 @@
                         Rotation="-45"
                         TextColor="White"
                         VerticalOptions="End"
-                        ZIndex="100" />
+                        ZIndex="100" />-->
 
                 </draw:SkiaLayout>
 
