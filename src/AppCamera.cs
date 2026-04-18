@@ -129,17 +129,17 @@ namespace CameraTests.UI
         /// <summary>
         /// Default minimum confidence threshold for the face-detection stage.
         /// </summary>
-        private const float DefaultMinFaceDetectionConfidence = 0.75f;
+        private const float DefaultMinFaceDetectionConfidence = 0.5f;
 
         /// <summary>
         /// Default minimum confidence threshold for the face-presence stage.
         /// </summary>
-        private const float DefaultMinFacePresenceConfidence = 0.75f;
+        private const float DefaultMinFacePresenceConfidence = 0.5f;
 
         /// <summary>
         /// Default minimum confidence threshold for landmark tracking.
         /// </summary>
-        private const float DefaultMinTrackingConfidence = 0.75f;
+        private const float DefaultMinTrackingConfidence = 0.5f;
 
         /// <summary>
         /// Time constant for overlay interpolation toward the latest detected landmarks.
@@ -799,7 +799,7 @@ namespace CameraTests.UI
         /// MediaPipe's async pipeline latency (~65–85 ms) and makes overlays track moving
         /// faces much more closely. Set to false to observe raw (uncompensated) positions.
         /// </summary>
-        public bool EnablePrediction { get; set; } = false;
+        public bool EnablePrediction { get; set; } = true;
 
         /// <summary>
         /// Enables One Euro Filter for landmark stabilization.
@@ -1194,9 +1194,9 @@ namespace CameraTests.UI
                 // Extrapolate ahead of the latest detection using inter-detection velocity.
                 // This compensates for pipeline latency so the overlay tracks the live face
                 // rather than where it was when the frame was captured.
-                // One Euro Filter path — smooth movement for masks (hats, face overlays).
-                // Dots and rectangles use the zero-lag per-landmark deadzone path below.
-                if (EnableOneEuroFilter && DrawMode == DetectionType.Mask)
+                // One Euro Filter path — smooth landmarks for all draw modes (masks, dots, rectangles).
+                // Rectangle bbox derives from filtered landmarks so box edges no longer jump on outlier noise.
+                if (EnableOneEuroFilter)
                 {
                     if (_renderedDetection == null || _filtersX == null || !CanSmoothRenderedDetection(_renderedDetection, target))
                     {
@@ -1227,8 +1227,8 @@ namespace CameraTests.UI
                     return _renderedDetection;
                 }
 
-                // Per-landmark deadzone path (zero-lag, for dots/rectangles)
-                // Reset filter state so switching back to Mask starts fresh
+                // Per-landmark deadzone path (zero-lag fallback when OneEuro is disabled).
+                // Reset filter state so re-enabling OneEuro starts fresh.
                 _filtersX = null;
                 _filtersY = null;
 
@@ -1345,37 +1345,6 @@ namespace CameraTests.UI
 
             compatiblePrevious = previous;
             return true;
-        }
-
-        /// <summary>
-        /// Extrapolates landmark positions from <paramref name="target"/> using the velocity
-        /// computed between <paramref name="previous"/> and <paramref name="target"/>.
-        /// The extrapolation distance equals the time elapsed since <paramref name="target"/>
-        /// was delivered, capped at two detection intervals to limit overshoot.
-        /// </summary>
-        private static DetectionSnapshot ComputePredictedDetection(
-            DetectionSnapshot? previous,
-            DetectionSnapshot target,
-            long nowTicks)
-        {
-            if (previous == null || !CanSmoothDetections(previous, target))
-                return target;
-
-            var sampleDtMs = Stopwatch.GetElapsedTime(previous.CompletedAtTicks, target.CompletedAtTicks).TotalMilliseconds;
-            if (sampleDtMs <= 0)
-                return target;
-
-            var elapsedMs = Stopwatch.GetElapsedTime(target.CompletedAtTicks, nowTicks).TotalMilliseconds;
-            if (elapsedMs <= 0)
-                return target;
-
-            // Cap at 2× detection interval to avoid extreme overshoot on direction changes.
-            var predictMs = Math.Min(elapsedMs, sampleDtMs * 1.5); //todo tune down to 1.0
-            var alpha = (float)(predictMs / sampleDtMs);
-            if (alpha < 0.01f)
-                return target;
-
-            return ExtrapolateDetectionSnapshot(previous, target, alpha, nowTicks);
         }
 
         /// <summary>
@@ -1919,11 +1888,25 @@ namespace CameraTests.UI
                 StrokeCap = SKStrokeCap.Round
             };
 
-            _maskPaint ??= new SKPaint
+            if (_maskPaint == null)
             {
-                IsAntialias = false,
-                FilterQuality = SKFilterQuality.None
-            };
+                if (RenderingScale < 2)
+                {
+                    _maskPaint = new SKPaint
+                    {
+                        IsAntialias = true,
+                        FilterQuality = SKFilterQuality.Medium
+                    };
+                }
+                else
+                {
+                    _maskPaint = new SKPaint
+                    {
+                        IsAntialias = false,
+                        FilterQuality = SKFilterQuality.None
+                    };
+                }
+            }
 
             _detectionStrokePaint.StrokeWidth = Math.Max(2f, 2f * scale);
             _detectionFillPaint.StrokeWidth = Math.Max(4f, 5f * scale);

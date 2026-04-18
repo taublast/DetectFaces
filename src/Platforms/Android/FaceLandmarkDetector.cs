@@ -2,18 +2,32 @@ using Android.Graphics;
 using MediaPipe.Tasks.Core;
 using MediaPipe.Tasks.Vision.Core;
 using MediaPipe.Tasks.Vision.FaceLandmarker;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using DetectFaces.Services;
 using MPImage = MediaPipe.Framework.Image.MPImage;
 using BitmapImageBuilder = MediaPipe.Framework.Image.BitmapImageBuilder;
+using Object = Java.Lang.Object;
+using RuntimeException = Java.Lang.RuntimeException;
+using static MediaPipe.Tasks.Core.OutputHandler;
 
 namespace DetectFaces.Platforms.Droid;
 
 /// <summary>
 /// https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker/android
 /// </summary>
-public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
+public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListener, IErrorListener, IDisposable
 {
+    private sealed class PendingContext
+    {
+        public PreviewDetectionRequest Request;
+        public MPImage Image = null!;
+        public double ConversionMilliseconds;
+        public long InferenceStartTicks;
+    }
+
+    private readonly ConcurrentDictionary<long, PendingContext> _pending = new();
+
     private FaceLandmarker? _landmarker;
     private readonly object _landmarkerSync = new();
     private bool _usingGpuDelegate;
@@ -108,7 +122,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
                     _usingGpuDelegate = true;
                     Debug.WriteLine("FaceLandmarker Android: using GPU delegate.");
                 }
-                catch (Exception ex)
+                catch (System.Exception ex)
                 {
                     Debug.WriteLine($"FaceLandmarker Android: GPU delegate init failed, falling back to CPU. {ex}");
                     _landmarker = CreateLandmarker(useGpu: false);
@@ -142,7 +156,9 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
             .SetMinFaceDetectionConfidence(new Java.Lang.Float(_minFaceDetectionConfidence))
             .SetMinFacePresenceConfidence(new Java.Lang.Float(_minFacePresenceConfidence))
             .SetMinTrackingConfidence(new Java.Lang.Float(_minTrackingConfidence))
-            .SetRunningMode(RunningMode.Video)
+            .SetRunningMode(RunningMode.LiveStream)
+            .SetResultListener(this)
+            .SetErrorListener(this)
             .Build();
 
         return FaceLandmarker.CreateFromOptions(
@@ -183,9 +199,27 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
             var timestampMs = Interlocked.Increment(ref _videoTimestampMs);
             var conversionMilliseconds = convertStopwatch.Elapsed.TotalMilliseconds;
 
-            _ = Task.Run(() => ProcessPreviewDetection(request, mpImage, timestampMs, conversionMilliseconds));
+            var context = new PendingContext
+            {
+                Request = request,
+                Image = mpImage,
+                ConversionMilliseconds = conversionMilliseconds,
+                InferenceStartTicks = Stopwatch.GetTimestamp(),
+            };
+            _pending[timestampMs] = context;
+
+            try
+            {
+                GetLandmarker().DetectAsync(mpImage, timestampMs);
+            }
+            catch
+            {
+                _pending.TryRemove(timestampMs, out _);
+                mpImage.Dispose();
+                throw;
+            }
         }
-        catch (Exception ex)
+        catch (System.Exception ex)
         {
             RaisePreviewDetectionFailed(request, ex);
         }
@@ -202,6 +236,12 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
 
             _landmarker = null;
         }
+
+        foreach (var kv in _pending.ToArray())
+        {
+            if (_pending.TryRemove(kv.Key, out var ctx))
+                ctx.Image?.Dispose();
+        }
     }
 
     private static float ClampConfidence(float value)
@@ -209,48 +249,60 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
         return Math.Clamp(value, 0f, 1f);
     }
 
-    private void ProcessPreviewDetection(PreviewDetectionRequest request, MPImage mpImage, long timestampMs, double conversionMilliseconds)
+    public void Run(Object resobj, Object image)
     {
-        try
+        var result = resobj as FaceLandmarkerResult;
+        if (result is null)
+            return;
+
+        var timestampMs = result.TimestampMs();
+        if (!_pending.TryRemove(timestampMs, out var context))
         {
-            var inferenceStopwatch = Stopwatch.StartNew();
-
-            using (mpImage)
-            {
-                using var result = GetLandmarker().DetectForVideo(mpImage, timestampMs);
-
-                inferenceStopwatch.Stop();
-
-                if (_disposed)
-                    return;
-
-                var converted = result is null
-                    ? new FaceLandmarkResult
-                    {
-                        Faces = [],
-                        ImageWidth = request.Width,
-                        ImageHeight = request.Height,
-                        ConversionMilliseconds = conversionMilliseconds,
-                        InferenceMilliseconds = inferenceStopwatch.Elapsed.TotalMilliseconds,
-                        UsedGpuDelegate = _usingGpuDelegate,
-                    }
-                    : ConvertResult(
-                        result,
-                        request.Width,
-                        request.Height,
-                        conversionMilliseconds,
-                        inferenceStopwatch.Elapsed.TotalMilliseconds,
-                        _usingGpuDelegate);
-
-                RaisePreviewDetectionCompleted(request, converted);
-            }
+            result.Dispose();
+            (image as MPImage)?.Dispose();
+            return;
         }
-        catch (Exception ex)
+
+        double inferenceMs = (Stopwatch.GetTimestamp() - context.InferenceStartTicks) * 1000.0 / Stopwatch.Frequency;
+
+        try
         {
             if (_disposed)
                 return;
 
-            RaisePreviewDetectionFailed(request, ex);
+            var converted = ConvertResult(
+                result,
+                context.Request.Width,
+                context.Request.Height,
+                context.ConversionMilliseconds,
+                inferenceMs,
+                _usingGpuDelegate);
+
+            RaisePreviewDetectionCompleted(context.Request, converted);
+        }
+        catch (System.Exception ex)
+        {
+            if (!_disposed)
+                RaisePreviewDetectionFailed(context.Request, ex);
+        }
+        finally
+        {
+            result.Dispose();
+            (image as MPImage)?.Dispose();
+        }
+    }
+
+    public void OnError(RuntimeException error)
+    {
+        var ex = new System.Exception(error?.Message ?? "MediaPipe FaceLandmarker error");
+        foreach (var kv in _pending.ToArray())
+        {
+            if (_pending.TryRemove(kv.Key, out var ctx))
+            {
+                ctx.Image?.Dispose();
+                if (!_disposed)
+                    RaisePreviewDetectionFailed(ctx.Request, ex);
+            }
         }
     }
 
@@ -259,29 +311,29 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector, IDisposable
         PreviewDetectionCompleted?.Invoke(this, new PreviewDetectionCompletedEventArgs(request, result));
     }
 
-    private void RaisePreviewDetectionFailed(PreviewDetectionRequest request, Exception exception)
+    private void RaisePreviewDetectionFailed(PreviewDetectionRequest request, System.Exception exception)
     {
         PreviewDetectionFailed?.Invoke(this, new PreviewDetectionFailedEventArgs(request, exception));
     }
 
-    public void Dispose()
+    protected override void Dispose(bool disposing)
     {
-        if (_disposed)
-            return;
+        if (!_disposed)
+        {
+            _disposed = true;
 
-        _disposed = true;
+            ResetLandmarker();
 
-        ResetLandmarker();
+            var liveBitmap = _liveBitmap;
+            _liveBitmap = null;
+            liveBitmap?.Dispose();
 
-        var liveBitmap = _liveBitmap;
-        _liveBitmap = null;
-        liveBitmap?.Dispose();
+            _livePixels = null;
+            _liveWidth = 0;
+            _liveHeight = 0;
+        }
 
-        _livePixels = null;
-        _liveWidth = 0;
-        _liveHeight = 0;
-
-        GC.SuppressFinalize(this);
+        base.Dispose(disposing);
     }
 
     private Bitmap GetOrCreateLiveBitmap(int width, int height)
