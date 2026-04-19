@@ -54,9 +54,9 @@ namespace CameraTests.UI
                 return;
 
             var scaleForMarks = frame.Scale * RenderingScale;
-            if (!frame.IsPreview)
+            if (!frame.IsPreview || RenderingScale < 2f)
             {
-                //still photo for our app case, make bigger
+                //still photo or desktop, for our app case, make marks bigger
                 scaleForMarks = Math.Min(frame.Width, frame.Height) / 300f;
             }
 
