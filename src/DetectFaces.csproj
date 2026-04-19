@@ -82,9 +82,12 @@
                 <MauiAsset Include="Resources\Raw\*.pbtxt" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
 
 	</ItemGroup>
+        <ItemGroup>
+          <None Include="..\README.md" Link="README.md" />
+        </ItemGroup>
 
 	<ItemGroup>
-		<!--<PackageReference Include="DrawnUi.Maui.Camera" Version="1.9.7.6" />-->
+		<PackageReference Include="DrawnUi.Maui.Camera" Version="1.9.8.1" />
 		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.5" />
 	</ItemGroup>
