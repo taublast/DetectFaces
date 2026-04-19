@@ -19,10 +19,11 @@
             Spacing="12"
             VerticalOptions="Center">
 
-            <!--<Button
+            <Button
+                IsVisible="False"
                 x:Name="DebugBtn"
                 Clicked="OnDebugClicked"
-                Text="Debug" />-->
+                Text="Debug" />
 
             <Label 
                 FontAttributes="Bold"
@@ -61,6 +62,31 @@
                         x:Name="CameraControl"
                         HorizontalOptions="Fill"
                         VerticalOptions="Fill" />
+
+                    <draw:SkiaShape
+                        x:Name="CapturePhotoButton"
+                        Tapped="OnCapturePhotoTapped"
+                        HorizontalOptions="Center"
+                        VerticalOptions="End"
+                        Margin="0,0,0,20"
+                        UseCache="GPU"
+                        ZIndex="100"
+                        Type="Circle"
+                        HeightRequest="54"
+                        LockRatio="1"
+                        StrokeWidth="4"
+                        StrokeColor="#D9F6FF"
+                        BackgroundColor="Transparent"
+                        Padding="4">
+
+                        <draw:SkiaShape
+                            x:Name="CapturePhotoButtonInner"
+                            Type="Circle"
+                            BackgroundColor="#E5F2F7"
+                            HorizontalOptions="Fill"
+                            VerticalOptions="Fill" />
+
+                    </draw:SkiaShape>
 
                     <!--<draw:SkiaLabel
                         BackgroundColor="Black"

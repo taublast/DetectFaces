@@ -1,6 +1,7 @@
 using CameraTests.UI;
 using DrawnUi;
 using DrawnUi.Camera;
+using DrawnUi.Draw;
 using System.Diagnostics;
 using AppoMobi.Specials;
 using DetectFaces.Services;
@@ -10,6 +11,7 @@ namespace DetectFaces;
 public partial class MainPage : ContentPage
 {
     private AppCamera.PreviewDetectionMetrics? _lastPreviewMetrics;
+    private bool _isCapturingPhoto;
     private bool _uiLoaded;
     private bool _hardwareAttached;
 
@@ -168,7 +170,7 @@ public partial class MainPage : ContentPage
                         }
                     };
 
-                    await CameraControl.SetMaskConfigurationAsync(config);
+                    await CameraControl.SetupMaskAsync(config);
                 }
                 catch (Exception ex)
                 {
@@ -177,7 +179,7 @@ public partial class MainPage : ContentPage
             }
             else
             {
-                await CameraControl.SetMaskConfigurationAsync(null);
+                await CameraControl.SetupMaskAsync(null);
             }
         }
     }
@@ -220,9 +222,14 @@ public partial class MainPage : ContentPage
             CameraControl.PermissionsResult += OnPermissionsResultChanged;
             CameraControl.StateChanged += CameraControlOnStateChanged;
             CameraControl.OnError += OnCameraError;
+            CameraControl.PropertyChanged += OnCameraControlPropertyChanged;
+            CameraControl.CaptureSuccess += OnCaptureSuccess;
+            CameraControl.CaptureFailed += OnCaptureFailed;
             CameraControl.PreviewDetectionMeasured += OnPreviewDetectionMeasured;
             CameraControl.PreviewDetectionUpdated += OnPreviewDetectionUpdated;
             CameraControl.PreviewDetectionFailed += OnPreviewDetectionFailed;
+
+            UpdateCaptureButtonVisualState();
 
             _hardwareAttached = true;
 
@@ -238,6 +245,9 @@ public partial class MainPage : ContentPage
                 CameraControl.PermissionsResult -= OnPermissionsResultChanged;
                 CameraControl.StateChanged -= CameraControlOnStateChanged;
                 CameraControl.OnError -= OnCameraError;
+                CameraControl.PropertyChanged -= OnCameraControlPropertyChanged;
+                CameraControl.CaptureSuccess -= OnCaptureSuccess;
+                CameraControl.CaptureFailed -= OnCaptureFailed;
                 CameraControl.PreviewDetectionMeasured -= OnPreviewDetectionMeasured;
                 CameraControl.PreviewDetectionUpdated -= OnPreviewDetectionUpdated;
                 CameraControl.PreviewDetectionFailed -= OnPreviewDetectionFailed;
@@ -260,8 +270,101 @@ public partial class MainPage : ContentPage
         }
     }
 
+    private async void OnCapturePhotoTapped(object? sender, ControlTappedEventArgs e)
+    {
+        if (_isCapturingPhoto)
+            return;
+
+        if (CameraControl.State != HardwareState.On || CameraControl.IsBusy)
+            return;
+
+        try
+        {
+            _isCapturingPhoto = true;
+
+            if (CapturePhotoButton != null)
+            {
+                CapturePhotoButton.IsEnabled = false;
+            }
+
+            UpdateCaptureButtonVisualState();
+
+            await CameraControl.TakePicture();
+        }
+        catch (Exception ex)
+        {
+            _isCapturingPhoto = false;
+            ResetCaptureButton();
+            ShowAlert("Capture Failed", ex.Message);
+        }
+    }
+
+    private void OnCaptureSuccess(object? sender, CapturedImage captured)
+    {
+        Tasks.StartDelayed(TimeSpan.FromMilliseconds(16), async () =>
+        {
+            try
+            {
+                var savedPath = await CameraControl.SaveToGalleryAsync(captured, "DetectFaces");
+                if (string.IsNullOrEmpty(savedPath))
+                {
+                    ShowAlert("Save Failed", "Photo was captured but could not be saved to gallery.");
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowAlert("Save Failed", ex.Message);
+            }
+            finally
+            {
+                _isCapturingPhoto = false;
+                MainThread.BeginInvokeOnMainThread(ResetCaptureButton);
+            }
+        });
+    }
+
+    private void OnCaptureFailed(object? sender, Exception ex)
+    {
+        _isCapturingPhoto = false;
+        ResetCaptureButton();
+        ShowAlert("Capture Failed", ex.Message);
+    }
+
+    private void OnCameraControlPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(CameraControl.IsBusy) || string.IsNullOrEmpty(e.PropertyName))
+        {
+            MainThread.BeginInvokeOnMainThread(UpdateCaptureButtonVisualState);
+        }
+    }
+
+    private void ResetCaptureButton()
+    {
+        if (CapturePhotoButton == null)
+            return;
+
+        UpdateCaptureButtonVisualState();
+    }
+
+    private void UpdateCaptureButtonVisualState()
+    {
+        if (CapturePhotoButton == null || CapturePhotoButtonInner == null)
+            return;
+
+        var isBusy = CameraControl?.IsBusy == true || _isCapturingPhoto;
+        var isReady = CameraControl?.State == HardwareState.On && !isBusy;
+
+        CapturePhotoButton.IsEnabled = isReady;
+        CapturePhotoButton.Opacity = CameraControl?.State == HardwareState.On ? 1.0 : 0.7;
+        CapturePhotoButtonInner.Opacity = isBusy ? 0.5 : 1;
+        CapturePhotoButton.ScaleX = isBusy ? 0.92 : 1.0;
+        CapturePhotoButton.ScaleY = isBusy ? 0.92 : 1.0;
+    }
+
     private void CameraControlOnStateChanged(object? sender, HardwareState e)
     {
+        UpdateCaptureButtonVisualState();
+
         if (e == HardwareState.On)
         {
             StatusLabel.Text = "Camera ready";
