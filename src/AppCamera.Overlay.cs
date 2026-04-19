@@ -8,37 +8,36 @@ namespace CameraTests.UI
     public partial class AppCamera : SkiaCamera
     {
         /// <summary>
-        /// When true, landmark positions are extrapolated forward from the latest detection
+        /// When enabled, landmark positions are extrapolated forward from the latest detection
         /// using the velocity between the two most recent detections. This compensates for
-        /// MediaPipe's async pipeline latency (~65–85 ms) and makes overlays track moving
-        /// faces much more closely. Set to false to observe raw (uncompensated) positions.
+        /// MediaPipe's asynchronous pipeline latency and makes overlays track moving faces
+        /// more closely. Disable this to observe raw, uncompensated positions.
         /// </summary>
         public bool EnablePrediction { get; set; } = true;
 
         /// <summary>
-        /// Enables One Euro Filter for landmark stabilization.
-        /// Adaptively smooths landmarks: strong filtering when still, minimal lag when moving.
+        /// Enables the One Euro filter for landmark stabilization.
+        /// It adaptively smooths landmarks: strong filtering when still, minimal lag when moving.
         /// When enabled, replaces the deadzone + interpolation smoothing path.
         /// </summary>
         public bool EnableOneEuroFilter { get; set; } = true;
 
         /// <summary>
-        /// Minimum cutoff frequency for the One Euro Filter (Hz).
-        /// Lower values = more smoothing when stationary. Range: 0.5–3.0.
+        /// Minimum cutoff frequency for the One Euro filter, in hertz.
+        /// Lower values produce more smoothing while stationary. Typical range: 0.5-3.0.
         /// </summary>
-        public float FilterMinCutoff { get; set; } = 1.0f;
+        public float FilterMinCutoff { get; set; } = 2.5f;
 
         /// <summary>
-        /// Speed coefficient for the One Euro Filter.
-        /// Higher values = less lag during fast movement. Range: 0.0–1.0.
+        /// Derivative cutoff frequency for the One Euro filter, in hertz.
         /// </summary>
-        public float FilterBeta { get; set; } = 15.0f;
+        public float FilterDCutoff { get; set; } = 2.0f;
 
         /// <summary>
-        /// Derivative cutoff frequency for the One Euro Filter (Hz).
+        /// Speed coefficient for the One Euro filter.
+        /// Higher values reduce lag during fast movement by increasing the adaptive cutoff.
         /// </summary>
-        public float FilterDCutoff { get; set; } = 1.0f;
-
+        public float FilterBeta { get; set; } = 25.0f;
 
         #region Detection Overlay
 
@@ -94,18 +93,45 @@ namespace CameraTests.UI
             float minY = float.MaxValue;
             float maxX = float.MinValue;
             float maxY = float.MinValue;
+            var hasFinitePoint = false;
 
             foreach (var point in face.Landmarks)
             {
                 var projected = ProjectPoint(point, rotation);
+
+                if (!float.IsFinite(projected.X) || !float.IsFinite(projected.Y))
+                    continue;
+
+                hasFinitePoint = true;
                 minX = Math.Min(minX, projected.X);
                 minY = Math.Min(minY, projected.Y);
                 maxX = Math.Max(maxX, projected.X);
                 maxY = Math.Max(maxY, projected.Y);
             }
 
-            frame.Canvas.DrawRect(minX * frame.Width, minY * frame.Height, (maxX - minX) * frame.Width,
-                (maxY - minY) * frame.Height, _paintDetectionFrameStroke);
+            if (!hasFinitePoint)
+                return;
+
+            minX = Math.Clamp(minX, 0f, 1f);
+            minY = Math.Clamp(minY, 0f, 1f);
+            maxX = Math.Clamp(maxX, 0f, 1f);
+            maxY = Math.Clamp(maxY, 0f, 1f);
+
+            if (maxX <= minX || maxY <= minY)
+                return;
+
+            float left = minX * frame.Width;
+            float top = minY * frame.Height;
+            float right = maxX * frame.Width;
+            float bottom = maxY * frame.Height;
+
+            if (!float.IsFinite(left) || !float.IsFinite(top) || !float.IsFinite(right) || !float.IsFinite(bottom))
+                return;
+
+            frame.Canvas.DrawLine(left, top, right, top, _paintDetectionFrameStroke);
+            frame.Canvas.DrawLine(right, top, right, bottom, _paintDetectionFrameStroke);
+            frame.Canvas.DrawLine(right, bottom, left, bottom, _paintDetectionFrameStroke);
+            frame.Canvas.DrawLine(left, bottom, left, top, _paintDetectionFrameStroke);
         }
 
         /// <summary>

@@ -18,6 +18,8 @@ namespace DetectFaces.Platforms.Droid;
 /// </summary>
 public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListener, IErrorListener, IDisposable
 {
+    private const int ConfigurationRestartDelayMs = 100;
+
     private sealed class PendingContext
     {
         public PreviewDetectionRequest Request;
@@ -41,6 +43,10 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
     private int _liveWidth;
     private int _liveHeight;
     private bool _disposed;
+    private int _configurationLockDepth;
+    private bool _restartRequired;
+    private bool _restartScheduled;
+    private int _restartSequence;
 
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
 
@@ -56,7 +62,7 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
                 return;
 
             _maxFaces = normalized;
-            ResetLandmarker();
+            OnConfigurationChanged();
         }
     }
 
@@ -70,7 +76,7 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
                 return;
 
             _minFaceDetectionConfidence = normalized;
-            ResetLandmarker();
+            OnConfigurationChanged();
         }
     }
 
@@ -84,7 +90,7 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
                 return;
 
             _minFacePresenceConfidence = normalized;
-            ResetLandmarker();
+            OnConfigurationChanged();
         }
     }
 
@@ -98,8 +104,54 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
                 return;
 
             _minTrackingConfidence = normalized;
-            ResetLandmarker();
+            OnConfigurationChanged();
         }
+    }
+
+    public void LockConfiguration()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        bool shouldStop = false;
+
+        lock (_landmarkerSync)
+        {
+            if (_configurationLockDepth == 0)
+            {
+                CancelScheduledRestartNoLock();
+                _restartRequired = true;
+                shouldStop = true;
+            }
+
+            _configurationLockDepth++;
+        }
+
+        if (shouldStop)
+            ResetLandmarker();
+    }
+
+    public void UnlockConfiguration()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        bool shouldRestart = false;
+
+        lock (_landmarkerSync)
+        {
+            if (_configurationLockDepth == 0)
+                return;
+
+            _configurationLockDepth--;
+
+            if (_configurationLockDepth == 0 && _restartRequired)
+            {
+                _restartRequired = false;
+                shouldRestart = true;
+            }
+        }
+
+        if (shouldRestart)
+            ScheduleRestart();
     }
 
     private FaceLandmarker GetLandmarker()
@@ -152,6 +204,8 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
         var options = FaceLandmarker.FaceLandmarkerOptions.InvokeBuilder()
             .SetBaseOptions(baseOptions)
             .SetNumFaces(new Java.Lang.Integer(_maxFaces))
+            .SetOutputFaceBlendshapes(false)
+            .SetOutputFacialTransformationMatrixes(false)
             // These thresholds are intentionally exposed by the sample so confidence tuning can be tested live.
             .SetMinFaceDetectionConfidence(new Java.Lang.Float(_minFaceDetectionConfidence))
             .SetMinFacePresenceConfidence(new Java.Lang.Float(_minFacePresenceConfidence))
@@ -171,6 +225,12 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
 
         try
         {
+            if (IsConfigurationLocked())
+            {
+                RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
+                return;
+            }
+
             if (rgbaBytes == null || request.Width <= 0 || request.Height <= 0 || rgbaBytes.Length < request.Width * request.Height * 4)
             {
                 RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
@@ -225,16 +285,123 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
         }
     }
 
-    private void ResetLandmarker()
+    private bool IsConfigurationLocked()
     {
         lock (_landmarkerSync)
         {
-            if (_landmarker is IDisposable disposable)
+            return _configurationLockDepth > 0 || _restartScheduled;
+        }
+    }
+
+    private void OnConfigurationChanged()
+    {
+        bool shouldRestart = false;
+
+        lock (_landmarkerSync)
+        {
+            _restartRequired = true;
+            CancelScheduledRestartNoLock();
+
+            if (_configurationLockDepth == 0)
+            {
+                _restartRequired = false;
+                shouldRestart = true;
+            }
+        }
+
+        if (!shouldRestart)
+            return;
+
+        ResetLandmarker();
+        ScheduleRestart();
+    }
+
+    private void ScheduleRestart()
+    {
+        int restartSequence;
+
+        lock (_landmarkerSync)
+        {
+            if (_disposed)
+                return;
+
+            _restartScheduled = true;
+            restartSequence = ++_restartSequence;
+        }
+
+        _ = RestartAfterDelayAsync(restartSequence);
+    }
+
+    private async Task RestartAfterDelayAsync(int restartSequence)
+    {
+        await Task.Delay(ConfigurationRestartDelayMs).ConfigureAwait(false);
+
+        bool shouldRestart = false;
+
+        lock (_landmarkerSync)
+        {
+            if (restartSequence != _restartSequence)
+                return;
+
+            _restartScheduled = false;
+
+            if (_disposed)
+                return;
+
+            if (_configurationLockDepth > 0)
+            {
+                _restartRequired = true;
+                return;
+            }
+
+            shouldRestart = true;
+        }
+
+        if (!shouldRestart)
+            return;
+
+        try
+        {
+            GetLandmarker();
+        }
+        catch (System.Exception ex)
+        {
+            Debug.WriteLine($"FaceLandmarker Android: delayed restart failed. {ex}");
+        }
+    }
+
+    private void CancelScheduledRestartNoLock()
+    {
+        _restartScheduled = false;
+        _restartSequence++;
+    }
+
+    private void ResetLandmarker()
+    {
+        FaceLandmarker? landmarker;
+
+        lock (_landmarkerSync)
+        {
+            landmarker = _landmarker;
+            _landmarker = null;
+            _usingGpuDelegate = false;
+        }
+
+        if (landmarker is not null)
+        {
+            try
+            {
+                landmarker.Close();
+            }
+            catch (System.Exception ex)
+            {
+                Debug.WriteLine($"FaceLandmarker Android: close during reset failed. {ex}");
+            }
+
+            if (landmarker is IDisposable disposable)
             {
                 disposable.Dispose();
             }
-
-            _landmarker = null;
         }
 
         foreach (var kv in _pending.ToArray())
@@ -321,6 +488,10 @@ public class FaceLandmarkDetector : Object, IFaceLandmarkDetector, IResultListen
         if (!_disposed)
         {
             _disposed = true;
+            lock (_landmarkerSync)
+            {
+                CancelScheduledRestartNoLock();
+            }
 
             ResetLandmarker();
 

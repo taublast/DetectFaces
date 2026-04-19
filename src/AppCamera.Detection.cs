@@ -8,93 +8,6 @@ namespace CameraTests.UI
 {
     public partial class AppCamera : SkiaCamera
     {
-        /// <summary>
-        /// Captures the newest preview frame for ML and feeds it into a coalescing detection pipeline.
-        /// Only one preview detection is allowed to run at a time. If a frame arrives while detection
-        /// is already in flight, this method keeps only the most recent pending request and drops older
-        /// intermediate frames so overlay latency stays low.
-        /// </summary>
-        /// <param name="frame">Temporary raw-frame context. Use <see cref="RawCameraFrame.TryGetRgba"/> for AI input.</param>
-        protected override void OnRawFrameAvailable(RawCameraFrame frame)
-        {
-            base.OnRawFrameAvailable(frame);
-
-            if (!EnablePreviewDetection || Detector == null)
-                return;
-
-            PendingDetectionRequest? requestToSubmit = null;
-            IFaceLandmarkDetector? detector = null;
-
-            try
-            {
-                lock (_detectionSync)
-                {
-                    if (_stopDetectionWorker || Detector == null)
-                        return;
-
-                    int targetWidth;
-                    int targetHeight;
-                    int detectionRotation;
-                    bool reusedCachedFrame = false;
-                    int writeBufferIndex = _activeDetectionBufferIndex == 0 ? 1 : 0;
-                    var resizeStopwatch = Stopwatch.StartNew();
-
-                    if (ReuseFirstMlFrameForPreviewDetection && _hasCachedMlFrame)
-                    {
-                        targetWidth = _cachedMlWidth;
-                        targetHeight = _cachedMlHeight;
-                        detectionRotation = _cachedMlRotation;
-                        reusedCachedFrame = true;
-                    }
-                    else
-                    {
-                        //app optimization logic
-                        if (!PrepareReusableBuffers(frame, writeBufferIndex, out targetWidth, out targetHeight))
-                            return;
-
-                        //calling GPU SkiaCamera GPU helpers
-                        if (!frame.TryGetRgba(targetWidth, targetHeight, _mlFrameBuffers[writeBufferIndex]))
-                            return;
-
-                        detectionRotation = 0;
-
-                        if (ReuseFirstMlFrameForPreviewDetection)
-                        {
-                            _cachedMlWidth = targetWidth;
-                            _cachedMlHeight = targetHeight;
-                            _cachedMlRotation = 0;
-                            _hasCachedMlFrame = true;
-                        }
-                    }
-
-                    resizeStopwatch.Stop();
-
-                    var request = new PendingDetectionRequest(
-                        writeBufferIndex,
-                        targetWidth,
-                        targetHeight,
-                        detectionRotation,
-                        resizeStopwatch.Elapsed.TotalMilliseconds,
-                        reusedCachedFrame);
-
-                    if (_activeDetectionBufferIndex >= 0)
-                    {
-                        _queuedDetectionRequest = request;
-                        return;
-                    }
-
-                    _activeDetectionBufferIndex = request.BufferIndex;
-                    detector = Detector;
-                    requestToSubmit = request;
-                }
-
-                SubmitPreviewDetection(detector, requestToSubmit);
-            }
-            catch
-            {
-                throw;
-            }
-        }
 
         #region Detection Configuration
 
@@ -114,7 +27,7 @@ namespace CameraTests.UI
         /// Base maximum dimension for frames sent to the detector when no tracked face state is available.
         /// Higher values preserve more detail but increase detector input size and processing cost.
         /// </summary>
-        private const int DefaultMlMaxDimension = 128;
+        private const int DefaultMlMaxDimension = 112;
 
         /// <summary>
         /// Reduced maximum detector input size used while one face is already tracked.
@@ -126,7 +39,7 @@ namespace CameraTests.UI
         /// Reduced maximum detector input size used while multiple faces are already tracked.
         /// This stays slightly larger than single-face mode to preserve more detail across several faces.
         /// </summary>
-        private const int DefaultTrackedMultiFaceMlMaxDimension = 128;
+        private const int DefaultTrackedMultiFaceMlMaxDimension = 112;
 
         /// <summary>
         /// Default minimum confidence threshold for the face-detection stage.
@@ -304,10 +217,18 @@ namespace CameraTests.UI
         {
             if (_detector != null)
             {
-                _detector.MaxFaces = _maxNumFaces;
-                _detector.MinFaceDetectionConfidence = ClampConfidence(MinFaceDetectionConfidence);
-                _detector.MinFacePresenceConfidence = ClampConfidence(MinFacePresenceConfidence);
-                _detector.MinTrackingConfidence = ClampConfidence(MinTrackingConfidence);
+                _detector.LockConfiguration();
+                try
+                {
+                    _detector.MaxFaces = _maxNumFaces;
+                    _detector.MinFaceDetectionConfidence = ClampConfidence(MinFaceDetectionConfidence);
+                    _detector.MinFacePresenceConfidence = ClampConfidence(MinFacePresenceConfidence);
+                    _detector.MinTrackingConfidence = ClampConfidence(MinTrackingConfidence);
+                }
+                finally
+                {
+                    _detector.UnlockConfiguration();
+                }
             }
         }
 
@@ -322,6 +243,94 @@ namespace CameraTests.UI
         #endregion
 
         #region Detection Pipeline
+
+        /// <summary>
+        /// Captures the newest preview frame for ML and feeds it into a coalescing detection pipeline.
+        /// Only one preview detection is allowed to run at a time. If a frame arrives while detection
+        /// is already in flight, this method keeps only the most recent pending request and drops older
+        /// intermediate frames so overlay latency stays low.
+        /// </summary>
+        /// <param name="frame">Temporary raw-frame context. Use <see cref="RawCameraFrame.TryGetRgba"/> for AI input.</param>
+        protected override void OnRawFrameAvailable(RawCameraFrame frame)
+        {
+            base.OnRawFrameAvailable(frame);
+
+            if (!EnablePreviewDetection || Detector == null)
+                return;
+
+            PendingDetectionRequest? requestToSubmit = null;
+            IFaceLandmarkDetector? detector = null;
+
+            try
+            {
+                lock (_detectionSync)
+                {
+                    if (_stopDetectionWorker || Detector == null)
+                        return;
+
+                    int targetWidth;
+                    int targetHeight;
+                    int detectionRotation;
+                    bool reusedCachedFrame = false;
+                    int writeBufferIndex = _activeDetectionBufferIndex == 0 ? 1 : 0;
+                    var resizeStopwatch = Stopwatch.StartNew();
+
+                    if (ReuseFirstMlFrameForPreviewDetection && _hasCachedMlFrame)
+                    {
+                        targetWidth = _cachedMlWidth;
+                        targetHeight = _cachedMlHeight;
+                        detectionRotation = _cachedMlRotation;
+                        reusedCachedFrame = true;
+                    }
+                    else
+                    {
+                        //app optimization logic
+                        if (!PrepareReusableBuffers(frame, writeBufferIndex, out targetWidth, out targetHeight))
+                            return;
+
+                        //calling GPU SkiaCamera GPU helpers
+                        if (!frame.TryGetRgba(targetWidth, targetHeight, _mlFrameBuffers[writeBufferIndex]))
+                            return;
+
+                        detectionRotation = 0;
+
+                        if (ReuseFirstMlFrameForPreviewDetection)
+                        {
+                            _cachedMlWidth = targetWidth;
+                            _cachedMlHeight = targetHeight;
+                            _cachedMlRotation = 0;
+                            _hasCachedMlFrame = true;
+                        }
+                    }
+
+                    resizeStopwatch.Stop();
+
+                    var request = new PendingDetectionRequest(
+                        writeBufferIndex,
+                        targetWidth,
+                        targetHeight,
+                        detectionRotation,
+                        resizeStopwatch.Elapsed.TotalMilliseconds,
+                        reusedCachedFrame);
+
+                    if (_activeDetectionBufferIndex >= 0)
+                    {
+                        _queuedDetectionRequest = request;
+                        return;
+                    }
+
+                    _activeDetectionBufferIndex = request.BufferIndex;
+                    detector = Detector;
+                    requestToSubmit = request;
+                }
+
+                SubmitPreviewDetection(detector, requestToSubmit);
+            }
+            catch
+            {
+                throw;
+            }
+        }
 
         /// <summary>
         /// Submits a prepared preview-detection request to the detector using the buffer selected in

@@ -3,6 +3,7 @@ using Foundation;
 using UIKit;
 using MediaPipeTasksVision;
 using DetectFaces.Services;
+using System.Diagnostics;
 
 namespace DetectFaces.Platforms.iOS;
 
@@ -11,8 +12,10 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private const float DefaultMinFaceDetectionConfidence = 0.3f;
     private const float DefaultMinFacePresenceConfidence = 0.3f;
     private const float DefaultMinTrackingConfidence = 0.3f;
+    private const int ConfigurationRestartDelayMs = 100;
 
     private MPPFaceLandmarker? _landmarker;
+    private readonly object _landmarkerSync = new();
     private readonly object _pendingSync = new();
     private readonly LiveStreamDelegate _liveStreamDelegate;
     private long _videoTimestampMs;
@@ -21,6 +24,10 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     private float _minFacePresenceConfidence = DefaultMinFacePresenceConfidence;
     private float _minTrackingConfidence = DefaultMinTrackingConfidence;
     private PendingDetection? _pendingDetection;
+    private int _configurationLockDepth;
+    private bool _restartRequired;
+    private bool _restartScheduled;
+    private int _restartSequence;
 
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
 
@@ -41,7 +48,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 return;
 
             _maxFaces = normalized;
-            _landmarker = null;
+            OnConfigurationChanged();
         }
     }
 
@@ -55,7 +62,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 return;
 
             _minFaceDetectionConfidence = normalized;
-            _landmarker = null;
+            OnConfigurationChanged();
         }
     }
 
@@ -69,7 +76,7 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 return;
 
             _minFacePresenceConfidence = normalized;
-            _landmarker = null;
+            OnConfigurationChanged();
         }
     }
 
@@ -83,8 +90,50 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 return;
 
             _minTrackingConfidence = normalized;
-            _landmarker = null;
+            OnConfigurationChanged();
         }
+    }
+
+    public void LockConfiguration()
+    {
+        bool shouldStop = false;
+
+        lock (_landmarkerSync)
+        {
+            if (_configurationLockDepth == 0)
+            {
+                CancelScheduledRestartNoLock();
+                _restartRequired = true;
+                shouldStop = true;
+            }
+
+            _configurationLockDepth++;
+        }
+
+        if (shouldStop)
+            ResetLandmarker();
+    }
+
+    public void UnlockConfiguration()
+    {
+        bool shouldRestart = false;
+
+        lock (_landmarkerSync)
+        {
+            if (_configurationLockDepth == 0)
+                return;
+
+            _configurationLockDepth--;
+
+            if (_configurationLockDepth == 0 && _restartRequired)
+            {
+                _restartRequired = false;
+                shouldRestart = true;
+            }
+        }
+
+        if (shouldRestart)
+            ScheduleRestart();
     }
 
     private MPPFaceLandmarker GetLandmarker()
@@ -92,27 +141,33 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         if (_landmarker is not null)
             return _landmarker;
 
-        var modelPath = NSBundle.MainBundle.PathForResource("face_landmarker", "task")
-            ?? throw new FileNotFoundException("face_landmarker.task not found in app bundle");
+        lock (_landmarkerSync)
+        {
+            if (_landmarker is not null)
+                return _landmarker;
 
-        var baseOptions = new MPPBaseOptions();
-        baseOptions.ModelAssetPath = modelPath;
-        baseOptions.Delegate = DetectionSettings.TryUseGpu ? MPPDelegate.Gpu : MPPDelegate.Cpu;
+            var modelPath = NSBundle.MainBundle.PathForResource("face_landmarker", "task")
+                ?? throw new FileNotFoundException("face_landmarker.task not found in app bundle");
 
-        var options = new MPPFaceLandmarkerOptions();
-        options.BaseOptions = baseOptions;
-        options.NumFaces = _maxFaces;
-        options.MinFaceDetectionConfidence = _minFaceDetectionConfidence;
-        options.MinFacePresenceConfidence = _minFacePresenceConfidence;
-        options.MinTrackingConfidence = _minTrackingConfidence;
-        options.RunningMode = MPPRunningMode.LiveStream;
-        options.FaceLandmarkerLiveStreamDelegate = _liveStreamDelegate;
+            var baseOptions = new MPPBaseOptions();
+            baseOptions.ModelAssetPath = modelPath;
+            baseOptions.Delegate = DetectionSettings.TryUseGpu ? MPPDelegate.Gpu : MPPDelegate.Cpu;
 
-        _landmarker = new MPPFaceLandmarker(options, out var error);
-        if (error is not null)
-            throw new InvalidOperationException($"Failed to create FaceLandmarker: {error.LocalizedDescription}");
+            var options = new MPPFaceLandmarkerOptions();
+            options.BaseOptions = baseOptions;
+            options.NumFaces = _maxFaces;
+            options.MinFaceDetectionConfidence = _minFaceDetectionConfidence;
+            options.MinFacePresenceConfidence = _minFacePresenceConfidence;
+            options.MinTrackingConfidence = _minTrackingConfidence;
+            options.RunningMode = MPPRunningMode.LiveStream;
+            options.FaceLandmarkerLiveStreamDelegate = _liveStreamDelegate;
 
-        return _landmarker;
+            _landmarker = new MPPFaceLandmarker(options, out var error);
+            if (error is not null)
+                throw new InvalidOperationException($"Failed to create FaceLandmarker: {error.LocalizedDescription}");
+
+            return _landmarker;
+        }
     }
 
     private static float ClampConfidence(float value)
@@ -124,6 +179,12 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     {
         try
         {
+            if (IsConfigurationLocked())
+            {
+                RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
+                return;
+            }
+
             if (rgbaBytes == null || request.Width <= 0 || request.Height <= 0 || rgbaBytes.Length < request.Width * request.Height * 4)
             {
                 RaisePreviewDetectionCompleted(request, new FaceLandmarkResult());
@@ -162,6 +223,102 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
         {
             RaisePreviewDetectionFailed(request, ex);
         }
+    }
+
+    private bool IsConfigurationLocked()
+    {
+        lock (_landmarkerSync)
+        {
+            return _configurationLockDepth > 0 || _restartScheduled;
+        }
+    }
+
+    private void OnConfigurationChanged()
+    {
+        bool shouldRestart = false;
+
+        lock (_landmarkerSync)
+        {
+            _restartRequired = true;
+            CancelScheduledRestartNoLock();
+
+            if (_configurationLockDepth == 0)
+            {
+                _restartRequired = false;
+                shouldRestart = true;
+            }
+        }
+
+        if (!shouldRestart)
+            return;
+
+        ResetLandmarker();
+        ScheduleRestart();
+    }
+
+    private void ResetLandmarker()
+    {
+        MPPFaceLandmarker? landmarker;
+
+        lock (_landmarkerSync)
+        {
+            landmarker = _landmarker;
+            _landmarker = null;
+        }
+
+        if (landmarker is IDisposable disposable)
+            disposable.Dispose();
+
+        lock (_pendingSync)
+        {
+            _pendingDetection = null;
+        }
+    }
+
+    private void ScheduleRestart()
+    {
+        int restartSequence;
+
+        lock (_landmarkerSync)
+        {
+            _restartScheduled = true;
+            restartSequence = ++_restartSequence;
+        }
+
+        _ = RestartAfterDelayAsync(restartSequence);
+    }
+
+    private async Task RestartAfterDelayAsync(int restartSequence)
+    {
+        await Task.Delay(ConfigurationRestartDelayMs).ConfigureAwait(false);
+
+        lock (_landmarkerSync)
+        {
+            if (_configurationLockDepth > 0 || restartSequence != _restartSequence)
+            {
+                if (_configurationLockDepth > 0)
+                    _restartRequired = true;
+
+                return;
+            }
+
+            _restartScheduled = false;
+        }
+
+        try
+        {
+            GetLandmarker();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"FaceLandmarker iOS: delayed restart failed. {ex}");
+        }
+    }
+
+    private void CancelScheduledRestartNoLock()
+    {
+        _restartScheduled = false;
+        _restartSequence++;
     }
 
     private void BeginPendingPreviewDetection(PreviewDetectionRequest request)

@@ -9,6 +9,14 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
     public float MinFacePresenceConfidence { get; set; } = 0.5f;
     public float MinTrackingConfidence { get; set; } = 0.5f;
 
+    public void LockConfiguration()
+    {
+    }
+
+    public void UnlockConfiguration()
+    {
+    }
+
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
 
     public event EventHandler<PreviewDetectionFailedEventArgs>? PreviewDetectionFailed;

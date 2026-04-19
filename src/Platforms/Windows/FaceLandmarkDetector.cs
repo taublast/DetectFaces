@@ -17,15 +17,21 @@ namespace DetectFaces.Platforms.Windows;
 
 public class FaceLandmarkDetector : IFaceLandmarkDetector
 {
+    private const int ConfigurationRestartDelayMs = 100;
 
 
     private static readonly SemaphoreSlim s_detectLock = new(1, 1);
     private readonly SemaphoreSlim _liveSessionLock = new(1, 1);
+    private readonly object _configurationSync = new();
     private LiveGraphSession? _liveSession;
     private int _maxFaces = 2;
     private float _minFaceDetectionConfidence = 0.5f;
     private float _minFacePresenceConfidence = 0.5f;
     private float _minTrackingConfidence = 0.5f;
+    private int _configurationLockDepth;
+    private bool _restartRequired;
+    private bool _restartScheduled;
+    private int _restartSequence;
 
     public event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
 
@@ -41,26 +47,92 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 return;
 
             _maxFaces = normalized;
-            _liveSession = null;
+            OnConfigurationChanged();
         }
     }
 
     public float MinFaceDetectionConfidence
     {
         get => _minFaceDetectionConfidence;
-        set => _minFaceDetectionConfidence = Math.Clamp(value, 0f, 1f);
+        set
+        {
+            var normalized = Math.Clamp(value, 0f, 1f);
+            if (_minFaceDetectionConfidence == normalized)
+                return;
+
+            _minFaceDetectionConfidence = normalized;
+            OnConfigurationChanged();
+        }
     }
 
     public float MinFacePresenceConfidence
     {
         get => _minFacePresenceConfidence;
-        set => _minFacePresenceConfidence = Math.Clamp(value, 0f, 1f);
+        set
+        {
+            var normalized = Math.Clamp(value, 0f, 1f);
+            if (_minFacePresenceConfidence == normalized)
+                return;
+
+            _minFacePresenceConfidence = normalized;
+            OnConfigurationChanged();
+        }
     }
 
     public float MinTrackingConfidence
     {
         get => _minTrackingConfidence;
-        set => _minTrackingConfidence = Math.Clamp(value, 0f, 1f);
+        set
+        {
+            var normalized = Math.Clamp(value, 0f, 1f);
+            if (_minTrackingConfidence == normalized)
+                return;
+
+            _minTrackingConfidence = normalized;
+            OnConfigurationChanged();
+        }
+    }
+
+    public void LockConfiguration()
+    {
+        bool shouldStop = false;
+
+        lock (_configurationSync)
+        {
+            if (_configurationLockDepth == 0)
+            {
+                CancelScheduledRestartNoLock();
+                _restartRequired = true;
+                shouldStop = true;
+            }
+
+            _configurationLockDepth++;
+        }
+
+        if (shouldStop)
+            StopLiveSession();
+    }
+
+    public void UnlockConfiguration()
+    {
+        bool shouldRestart = false;
+
+        lock (_configurationSync)
+        {
+            if (_configurationLockDepth == 0)
+                return;
+
+            _configurationLockDepth--;
+
+            if (_configurationLockDepth == 0 && _restartRequired)
+            {
+                _restartRequired = false;
+                shouldRestart = true;
+            }
+        }
+
+        if (shouldRestart)
+            ScheduleRestart();
     }
 
     public async Task<FaceLandmarkResult> DetectAsync(Stream imageStream)
@@ -79,6 +151,12 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
 
     public void EnqueuePreviewDetection(byte[] rgbaBytes, PreviewDetectionRequest request)
     {
+        if (IsConfigurationLocked())
+        {
+            PreviewDetectionCompleted?.Invoke(this, new PreviewDetectionCompletedEventArgs(request, new FaceLandmarkResult()));
+            return;
+        }
+
         _ = Task.Run(async () =>
         {
             try
@@ -91,6 +169,100 @@ public class FaceLandmarkDetector : IFaceLandmarkDetector
                 PreviewDetectionFailed?.Invoke(this, new PreviewDetectionFailedEventArgs(request, ex));
             }
         });
+    }
+
+    private bool IsConfigurationLocked()
+    {
+        lock (_configurationSync)
+        {
+            return _configurationLockDepth > 0 || _restartScheduled;
+        }
+    }
+
+    private void OnConfigurationChanged()
+    {
+        bool shouldRestart = false;
+
+        lock (_configurationSync)
+        {
+            _restartRequired = true;
+            CancelScheduledRestartNoLock();
+
+            if (_configurationLockDepth == 0)
+            {
+                _restartRequired = false;
+                shouldRestart = true;
+            }
+        }
+
+        if (!shouldRestart)
+            return;
+
+        StopLiveSession();
+        ScheduleRestart();
+    }
+
+    private void StopLiveSession()
+    {
+        LiveGraphSession? liveSession;
+
+        _liveSessionLock.Wait();
+        try
+        {
+            liveSession = _liveSession;
+            _liveSession = null;
+        }
+        finally
+        {
+            _liveSessionLock.Release();
+        }
+
+        liveSession?.Dispose();
+    }
+
+    private void ScheduleRestart()
+    {
+        int restartSequence;
+
+        lock (_configurationSync)
+        {
+            _restartScheduled = true;
+            restartSequence = ++_restartSequence;
+        }
+
+        _ = RestartAfterDelayAsync(restartSequence);
+    }
+
+    private async Task RestartAfterDelayAsync(int restartSequence)
+    {
+        await Task.Delay(ConfigurationRestartDelayMs).ConfigureAwait(false);
+
+        lock (_configurationSync)
+        {
+            if (_configurationLockDepth > 0 || restartSequence != _restartSequence)
+            {
+                if (_configurationLockDepth > 0)
+                    _restartRequired = true;
+
+                return;
+            }
+
+            _restartScheduled = false;
+        }
+
+        try
+        {
+            await GetOrCreateLiveSessionAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
+    private void CancelScheduledRestartNoLock()
+    {
+        _restartScheduled = false;
+        _restartSequence++;
     }
 
     private async Task<FaceLandmarkResult> DetectPreviewAsync(byte[] rgbaBytes, int width, int height)

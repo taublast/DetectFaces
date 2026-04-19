@@ -7,6 +7,9 @@ public interface IFaceLandmarkDetector
     float MinFacePresenceConfidence { get; set; }
     float MinTrackingConfidence { get; set; }
 
+    void LockConfiguration();
+    void UnlockConfiguration();
+
     event EventHandler<PreviewDetectionCompletedEventArgs>? PreviewDetectionCompleted;
     event EventHandler<PreviewDetectionFailedEventArgs>? PreviewDetectionFailed;
 
