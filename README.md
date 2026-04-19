@@ -1,6 +1,6 @@
 # DetectFaces
 
-This is a cross-platform **.NET MAUI** sample app that runs live face landmark detection using **MediaPipe Tasks** over a `SkiaCamera` preview. It draws overlays directly on the same Skia canvas, and allows capturing photos with detection overlay applied. App uses **DrawnUi** for rendering camera and overlays.
+This is a cross-platform **.NET MAUI** sample app that runs live face landmark detection using **MediaPipe Tasks** over a `SkiaCamera` preview. It draws overlays directly on the same Skia canvas, and allows capturing photos with detection overlay applied. Available overlay types are Landmark, Rectangle, Spiderman Mask, Funny Hat. App uses **DrawnUi** for rendering camera and overlays.
 
 ## Platform Status
 
