@@ -17,4 +17,9 @@ public static class DetectionSettings
     /// 0 = Landmark, 1 = Rectangle, 2 = Mask (Spider-Man), 3 = Hat (Cake).
     /// </summary>
     public static DetectionType InitialDetectionType = DetectionType.Rectangle;
+
+    /// <summary>
+    /// Initial maximum number of faces the detector should track at startup.
+    /// </summary>
+    public static int InitialMaxFaces = 1;
 }   

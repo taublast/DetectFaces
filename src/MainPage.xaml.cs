@@ -65,6 +65,8 @@ public partial class MainPage : ContentPage
         try
         {
             InitializeComponent();
+            CameraControl.MaxNumFaces = Math.Max(1, DetectionSettings.InitialMaxFaces);
+            FacesPicker.SelectedIndex = Math.Clamp(CameraControl.MaxNumFaces - 1, 0, FacesPicker.Items.Count - 1);
             ModePicker.SelectedIndex = DetectionSettings.InitialDetectionType switch
             {
                 DetectionType.Rectangle => 1,
@@ -105,6 +107,7 @@ public partial class MainPage : ContentPage
     protected override void OnDisappearing()
     {
         AttachHardware(false);
+        FacesPicker?.Unfocus();
         ModePicker?.Unfocus();
         Unfocus();
 
@@ -132,6 +135,18 @@ public partial class MainPage : ContentPage
 
 
     #region DETECT FACE LANDMARKS
+
+    private void OnFacesCountChanged(object? sender, EventArgs e)
+    {
+        if (FacesPicker == null)
+            return;
+
+        var selectedFaces = FacesPicker.SelectedItem is string value && int.TryParse(value, out var parsed)
+            ? parsed
+            : FacesPicker.SelectedIndex + 1;
+
+        CameraControl.MaxNumFaces = Math.Max(1, selectedFaces);
+    }
 
     private async void OnModeChanged(object? sender, EventArgs e)
     {

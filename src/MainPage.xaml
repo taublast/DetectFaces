@@ -28,9 +28,26 @@
             <Label 
                 FontAttributes="Bold"
                 VerticalOptions="Center"
+                Text="Faces:"/>
+
+            <Picker
+                x:Name="FacesPicker"
+                SelectedIndexChanged="OnFacesCountChanged"
+                VerticalOptions="Center">
+                <Picker.Items>
+                    <x:String>1</x:String>
+                    <x:String>2</x:String>
+                    <x:String>3</x:String>
+                    <x:String>4</x:String>
+                </Picker.Items>
+            </Picker>
+
+            <Label 
+                FontAttributes="Bold"
+                VerticalOptions="Center"
                 Text="Mask:"/>
 
-                <Picker
+            <Picker
                 x:Name="ModePicker"
                 SelectedIndexChanged="OnModeChanged"
                 VerticalOptions="Center">
