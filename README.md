@@ -12,6 +12,8 @@ This is a cross-platform **.NET MAUI** sample app that runs live face landmark d
 | iOS | `MediaPipeTasksVision.iOS` | Implemented |
 | Windows | `Mediapipe.Net` + `Mediapipe.Net.Runtime.CPU` | Implemented |
 
+Note: `AppoMobi.Preview.MediaPipeTasksVision.Android` is a `MediaPipeTasksVision.Android` fork [with extra methods](https://github.com/taublast/MediaPipeTasks/tree/bulkpts) for bulk landmark read-back to reduce readback time.
+
 ## How It Works
 
 1. `AppCamera` downsizes camera live preview frames and extracts RGBA pixels with `frame.TryGetRgba(...)` inside `OnRawFrameAvailable(...)`.
