@@ -1,10 +1,11 @@
+using AppoMobi.Specials;
 using CameraTests.UI;
+using DetectFaces.Services;
 using DrawnUi;
 using DrawnUi.Camera;
 using DrawnUi.Draw;
 using System.Diagnostics;
-using AppoMobi.Specials;
-using DetectFaces.Services;
+using static Microsoft.Maui.Controls.PlatformConfiguration.iOSSpecific.VisualElement;
 
 namespace DetectFaces;
 
@@ -299,8 +300,21 @@ public partial class MainPage : ContentPage
         }
     }
 
-    private void OnCaptureSuccess(object? sender, CapturedImage captured)
+    private async void OnCaptureSuccess(object? sender, CapturedImage captured)
     {
+        //will apply detection overlay to photo if needed
+        if (CameraControl.UseRealtimeVideoProcessing && CameraControl.DrawMode != DetectionType.Disabled)
+        {
+            var newImage = await CameraControl.RenderCapturedPhotoAsync(
+                captured,
+                CameraControl.ProcessFrame,
+                useGpu: true);
+
+            captured.Image.Dispose();
+            captured.Image = newImage; //and replace captured one with processed one
+        }
+
+        //save in background
         Tasks.StartDelayed(TimeSpan.FromMilliseconds(16), async () =>
         {
             try

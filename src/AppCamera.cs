@@ -58,10 +58,10 @@ namespace CameraTests.UI
             _paintRec = null;
             _paintPreview?.Dispose();
             _paintPreview = null;
-            _detectionStrokePaint?.Dispose();
-            _detectionStrokePaint = null;
-            _detectionFillPaint?.Dispose();
-            _detectionFillPaint = null;
+            _paintDetectionFrameStroke?.Dispose();
+            _paintDetectionFrameStroke = null;
+            _paintDetectionDotsStroke?.Dispose();
+            _paintDetectionDotsStroke = null;
             _maskPaint?.Dispose();
             _maskPaint = null;
             MaskBitmap?.Dispose();

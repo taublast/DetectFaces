@@ -3,7 +3,6 @@ using DrawnUi.Camera;
 using SkiaSharp;
 using System.Diagnostics;
 
-
 namespace CameraTests.UI
 {
     public partial class AppCamera : SkiaCamera
@@ -54,7 +53,14 @@ namespace CameraTests.UI
             if (rendered == null || rendered.Faces.Count == 0)
                 return;
 
-            EnsureDetectionPaints(frame.Scale);
+            var scaleForMarks = frame.Scale * RenderingScale;
+            if (!frame.IsPreview)
+            {
+                //still photo for our app case, make bigger
+                scaleForMarks = Math.Min(frame.Width, frame.Height) / 300f;
+            }
+
+            EnsureDetectionPaints(scaleForMarks);
 
             foreach (var face in rendered.Faces)
             {
@@ -91,7 +97,7 @@ namespace CameraTests.UI
 
             foreach (var point in face.Landmarks)
             {
-                var projected = ProjectPoint(point, rotation, false);
+                var projected = ProjectPoint(point, rotation);
                 minX = Math.Min(minX, projected.X);
                 minY = Math.Min(minY, projected.Y);
                 maxX = Math.Max(maxX, projected.X);
@@ -99,7 +105,7 @@ namespace CameraTests.UI
             }
 
             frame.Canvas.DrawRect(minX * frame.Width, minY * frame.Height, (maxX - minX) * frame.Width,
-                (maxY - minY) * frame.Height, _detectionStrokePaint);
+                (maxY - minY) * frame.Height, _paintDetectionFrameStroke);
         }
 
         /// <summary>
@@ -114,11 +120,11 @@ namespace CameraTests.UI
             var pts = new SKPoint[landmarks.Count];
             for (int i = 0; i < landmarks.Count; i++)
             {
-                var projected = ProjectPoint(landmarks[i], rotation, false);
+                var projected = ProjectPoint(landmarks[i], rotation);
                 pts[i] = new SKPoint(projected.X * frame.Width, projected.Y * frame.Height);
             }
 
-            frame.Canvas.DrawPoints(SKPointMode.Points, pts, _detectionFillPaint);
+            frame.Canvas.DrawPoints(SKPointMode.Points, pts, _paintDetectionDotsStroke);
         }
 
         /// <summary>
@@ -184,9 +190,9 @@ namespace CameraTests.UI
             var leftCheek = face.Landmarks[234];
             var rightCheek = face.Landmarks[454];
 
-            var anchor = ProjectPoint(anchorPt, rotation, false);
-            var left = ProjectPoint(leftCheek, rotation, false);
-            var right = ProjectPoint(rightCheek, rotation, false);
+            var anchor = ProjectPoint(anchorPt, rotation);
+            var left = ProjectPoint(leftCheek, rotation);
+            var right = ProjectPoint(rightCheek, rotation);  
 
             float xAnchor = anchor.X * frame.Width;
             float yAnchor = anchor.Y * frame.Height;
@@ -227,7 +233,7 @@ namespace CameraTests.UI
         /// <param name="scale">The frame scale used to size strokes consistently across outputs.</param>
         private void EnsureDetectionPaints(float scale)
         {
-            _detectionStrokePaint ??= new SKPaint
+            _paintDetectionFrameStroke ??= new SKPaint
             {
                 IsAntialias = true,
                 Color = SKColors.LimeGreen,
@@ -236,7 +242,7 @@ namespace CameraTests.UI
                 StrokeJoin = SKStrokeJoin.Round
             };
 
-            _detectionFillPaint ??= new SKPaint
+            _paintDetectionDotsStroke ??= new SKPaint
             {
                 IsAntialias = true,
                 Color = SKColors.LimeGreen,
@@ -264,8 +270,8 @@ namespace CameraTests.UI
                 }
             }
 
-            _detectionStrokePaint.StrokeWidth = Math.Max(2f, 2f * scale);
-            _detectionFillPaint.StrokeWidth = Math.Max(4f, 5f * scale);
+            _paintDetectionFrameStroke.StrokeWidth = Math.Max(2f, 2f * scale);
+            _paintDetectionDotsStroke.StrokeWidth = Math.Max(2f, 2f * scale);
         }
 
         /// <summary>
@@ -276,7 +282,7 @@ namespace CameraTests.UI
         /// <param name="rotation">The detector rotation to apply.</param>
         /// <param name="mirrorX">Whether to mirror the projected point horizontally.</param>
         /// <returns>The projected normalized point in frame space.</returns>
-        private static NormalizedPoint ProjectPoint(NormalizedPoint point, int rotation, bool mirrorX)
+        private static NormalizedPoint ProjectPoint(NormalizedPoint point, int rotation, bool mirrorX = false)
         {
             float x = point.X;
             float y = point.Y;
@@ -319,8 +325,8 @@ namespace CameraTests.UI
 
         private SKPaint? _paintPreview;
         private SKPaint? _paintRec;
-        private SKPaint? _detectionStrokePaint;
-        private SKPaint? _detectionFillPaint;
+        private SKPaint? _paintDetectionFrameStroke;
+        private SKPaint? _paintDetectionDotsStroke;
         private SKPaint? _maskPaint;
         private SKBitmap? MaskBitmap;
         private SKImage? MaskImage;
@@ -597,33 +603,35 @@ namespace CameraTests.UI
 
             DrawDetectionOverlay(frame);
 
+            var useScale = RenderingScale * frame.Scale;
+
             //if (frame.IsPreview)
             {
                 // draw frame indicator
                 if (paint.Color != SKColors.Transparent)
                 {
                     paint.Style = SKPaintStyle.Stroke;
-                    paint.StrokeWidth = 2 * frame.Scale;
-                    frame.Canvas.DrawRect(10 * frame.Scale, 10 * frame.Scale, frame.Width - 20 * frame.Scale,
-                        frame.Height - 20 * frame.Scale, paint);
+                    paint.StrokeWidth = 2 * useScale;
+                    frame.Canvas.DrawRect(10 * useScale, 10 * useScale, frame.Width - 20 * useScale,
+                        frame.Height - 20 * useScale, paint);
                 }
 
                 if (!string.IsNullOrEmpty(text))
                 {
-                    paint.TextSize = 48 * frame.Scale;
+                    paint.TextSize = 48 * useScale;
                     paint.Color = IsPreRecording ? SKColors.White : SKColors.Red;
                     paint.Style = SKPaintStyle.Fill;
 
                     if (IsRecording || IsPreRecording)
                     {
                         // text at top left
-                        frame.Canvas.DrawText(text, 50 * frame.Scale, 100 * frame.Scale, paint);
-                        frame.Canvas.DrawText(text2, 50 * frame.Scale, 160 * frame.Scale, paint);
+                        frame.Canvas.DrawText(text, 50 * useScale, 100 * useScale, paint);
+                        frame.Canvas.DrawText(text2, 50 * useScale, 160 * useScale, paint);
                     }
                     else
                     {
                         paint.Color = SKColors.White;
-                        frame.Canvas.DrawText(text, 50 * frame.Scale, 100 * frame.Scale, paint);
+                        frame.Canvas.DrawText(text, 50 * useScale, 100 * useScale, paint);
                     }
                 }
             }
