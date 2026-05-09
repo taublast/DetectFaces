@@ -67,8 +67,9 @@ For iOS, build on macOS with Xcode and the MAUI iOS workload installed.
 
 - [src/Implementation.md](src/Implementation.md) documents the current architecture in more detail.
 - [src/Includes.md](src/Includes.md) lists the embedded models and explains why the asset set differs between mobile and Windows.
+- [MediaPipe Tasks for .NET MAUI](https://github.com/v-hogood/MediaPipeTasks)
 - [SkiaCamera](https://github.com/taublast/DrawnUi.Maui.Camera) repo with docs.
-- [What else to detect with MediaTasks](https://google-ai-edge.github.io/mediapipe-samples-web)
-- [Mediatasks Audio Classifier Detectables](https://github.com/tensorflow/models/blob/master/research/audioset/yamnet/yamnet_class_map.csv)
+- [What else to detect with MediaPipe](https://google-ai-edge.github.io/mediapipe-samples-web)
+- [MediaPipe Audio Classifier Detectables](https://github.com/tensorflow/models/blob/master/research/audioset/yamnet/yamnet_class_map.csv)
 
 
