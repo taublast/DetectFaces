@@ -186,7 +186,7 @@ namespace CameraTests.UI
                 var kill3 = MaskImage;
                 using var gpu = this.CreateSurface(MaskBitmap.Width, MaskBitmap.Height, true);
                 gpu.Canvas.Clear(SKColors.Transparent);
-                gpu.Canvas.DrawBitmap(MaskBitmap, 0, 0);
+                gpu.Canvas.DrawBitmap(MaskBitmap, 0, 0, new SKSamplingOptions(SKFilterMode.Nearest, SKMipmapMode.None));
                 gpu.Canvas.Flush();
                 MaskImage = gpu.Snapshot();
                 DisposeObject(kill3);
@@ -248,7 +248,7 @@ namespace CameraTests.UI
             frame.Canvas.Translate(xAnchor, yAnchor);
             frame.Canvas.RotateDegrees(angle);
             frame.Canvas.DrawImage(MaskImage,
-                new SKRect(-maskWidth / 2f, targetDrawY, maskWidth / 2f, targetDrawY + maskHeight), _maskPaint);
+                new SKRect(-maskWidth / 2f, targetDrawY, maskWidth / 2f, targetDrawY + maskHeight), _maskSampling, _maskPaint);
             frame.Canvas.Restore();
         }
 
@@ -282,17 +282,17 @@ namespace CameraTests.UI
                 {
                     _maskPaint = new SKPaint
                     {
-                        IsAntialias = true,
-                        FilterQuality = SKFilterQuality.Medium
+                        IsAntialias = true
                     };
+                    _maskSampling = new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear);
                 }
                 else
                 {
                     _maskPaint = new SKPaint
                     {
-                        IsAntialias = false,
-                        FilterQuality = SKFilterQuality.None
+                        IsAntialias = false
                     };
+                    _maskSampling = new SKSamplingOptions(SKFilterMode.Nearest, SKMipmapMode.None);
                 }
             }
 
@@ -354,6 +354,8 @@ namespace CameraTests.UI
         private SKPaint? _paintDetectionFrameStroke;
         private SKPaint? _paintDetectionDotsStroke;
         private SKPaint? _maskPaint;
+        private SKSamplingOptions _maskSampling;
+        private SKFont? _fontOverlay;
         private SKBitmap? MaskBitmap;
         private SKImage? MaskImage;
         private MaskConfiguration? ActiveMaskConfig;
@@ -587,7 +589,8 @@ namespace CameraTests.UI
             }
 
             var paint = frame.IsPreview ? _paintPreview : _paintRec;
-            paint.TextSize = 32 * frame.Scale;
+            _fontOverlay ??= new SKFont();
+            _fontOverlay.Size = 32 * frame.Scale;
             paint.Style = SKPaintStyle.Fill;
 
             // text at top left
@@ -644,20 +647,20 @@ namespace CameraTests.UI
 
                 if (!string.IsNullOrEmpty(text))
                 {
-                    paint.TextSize = 48 * useScale;
+                    _fontOverlay.Size = 48 * useScale;
                     paint.Color = IsPreRecording ? SKColors.White : SKColors.Red;
                     paint.Style = SKPaintStyle.Fill;
 
                     if (IsRecording || IsPreRecording)
                     {
                         // text at top left
-                        frame.Canvas.DrawText(text, 50 * useScale, 100 * useScale, paint);
-                        frame.Canvas.DrawText(text2, 50 * useScale, 160 * useScale, paint);
+                        frame.Canvas.DrawText(text, 50 * useScale, 100 * useScale, _fontOverlay, paint);
+                        frame.Canvas.DrawText(text2, 50 * useScale, 160 * useScale, _fontOverlay, paint);
                     }
                     else
                     {
                         paint.Color = SKColors.White;
-                        frame.Canvas.DrawText(text, 50 * useScale, 100 * useScale, paint);
+                        frame.Canvas.DrawText(text, 50 * useScale, 100 * useScale, _fontOverlay, paint);
                     }
                 }
             }
